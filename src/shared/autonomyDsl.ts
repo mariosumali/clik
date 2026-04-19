@@ -11,7 +11,7 @@
 //   w1     = wait(ms: 500)                      @ (200, 200)
 //   c1     = click(button: "left", kind: "single",
 //                  target: point(100, 200))     @ (360, 200)
-//   f1     = find(template: $tpl_f1, threshold: 0.2)
+//   f1     = find(template: $tpl_f1, minConfidence: 0.85)
 //   b1     = branch(condition: "last-found")
 //   end1   = end()
 //
@@ -116,6 +116,9 @@ const KIND_TO_DSL: Record<AutonomyNodeKind, string> = {
   'type-text': 'typeText',
   drag: 'drag',
   screenshot: 'screenshot',
+  'read-text': 'readText',
+  'focus-app': 'focusApp',
+  'call-flow': 'callFlow',
 };
 
 const DSL_TO_KIND: Record<string, AutonomyNodeKind> = Object.fromEntries(
@@ -220,7 +223,7 @@ function formatNodeArgs(node: AutonomyNode): string {
     case 'find':
       return join(
         kvRaw('template', formatTemplateRef(node.id, node.template)),
-        kv('threshold', node.threshold),
+        kv('minConfidence', node.minConfidence),
         node.searchRegion ? kvRaw('searchRegion', formatRect(node.searchRegion)) : '',
       );
     case 'branch':
@@ -253,7 +256,7 @@ function formatNodeArgs(node: AutonomyNode): string {
     case 'wait-until-gone':
       return join(
         kvRaw('template', formatTemplateRef(node.id, node.template)),
-        kv('threshold', node.threshold),
+        kv('minConfidence', node.minConfidence),
         kv('intervalMs', node.intervalMs),
         kv('timeoutMs', node.timeoutMs),
         node.searchRegion ? kvRaw('searchRegion', formatRect(node.searchRegion)) : '',
@@ -287,6 +290,36 @@ function formatNodeArgs(node: AutonomyNode): string {
         kv('toClipboard', node.toClipboard),
         kv('saveToDisk', node.saveToDisk),
         node.pathVar ? kv('pathVar', node.pathVar) : '',
+      );
+    case 'read-text':
+      return join(
+        node.region ? kvRaw('region', formatRect(node.region)) : '',
+        kv('textVar', node.textVar),
+        node.confidenceVar ? kv('confidenceVar', node.confidenceVar) : '',
+        node.accurate ? kv('accurate', node.accurate) : '',
+        node.lang ? kv('lang', node.lang) : '',
+      );
+    case 'focus-app':
+      return join(
+        kv('appName', node.appName),
+        node.launchIfMissing ? kv('launchIfMissing', node.launchIfMissing) : '',
+        node.resultVar ? kv('resultVar', node.resultVar) : '',
+      );
+    case 'call-flow':
+      return join(
+        kv('flowId', node.flowId ?? ''),
+        node.argVars && node.argVars.length > 0
+          ? kvRaw(
+              'argVars',
+              '[' + node.argVars.map((a) => `{from:${quote(a.from)},to:${quote(a.to)}}`).join(',') + ']',
+            )
+          : '',
+        node.returnVars && node.returnVars.length > 0
+          ? kvRaw(
+              'returnVars',
+              '[' + node.returnVars.map((v) => quote(v)).join(',') + ']',
+            )
+          : '',
       );
   }
 }
@@ -1207,7 +1240,7 @@ function buildNode(
         ...pos,
         template: readTemplate(ctx, 'template'),
         searchRegion: readRect(ctx, 'searchRegion') ?? null,
-        threshold: num(ctx, 'threshold', 0.2, { min: 0, max: 1 }),
+        minConfidence: readMinConfidence(ctx),
       } as FindNode;
     }
     case 'branch':
@@ -1281,7 +1314,7 @@ function buildNode(
         ...pos,
         template: readTemplate(ctx, 'template'),
         searchRegion: readRect(ctx, 'searchRegion') ?? null,
-        threshold: num(ctx, 'threshold', 0.2, { min: 0, max: 1 }),
+        minConfidence: readMinConfidence(ctx),
         intervalMs: num(ctx, 'intervalMs', 250, { min: 1 }),
         timeoutMs: num(ctx, 'timeoutMs', 5000, { min: 1 }),
       } as WaitUntilFoundNode;
@@ -1292,7 +1325,7 @@ function buildNode(
         ...pos,
         template: readTemplate(ctx, 'template'),
         searchRegion: readRect(ctx, 'searchRegion') ?? null,
-        threshold: num(ctx, 'threshold', 0.2, { min: 0, max: 1 }),
+        minConfidence: readMinConfidence(ctx),
         intervalMs: num(ctx, 'intervalMs', 250, { min: 1 }),
         timeoutMs: num(ctx, 'timeoutMs', 5000, { min: 1 }),
       } as WaitUntilGoneNode;
@@ -1351,6 +1384,39 @@ function buildNode(
       if (args.has('pathVar')) node.pathVar = str(ctx, 'pathVar', '');
       return node;
     }
+    case 'read-text': {
+      return {
+        id,
+        kind: 'read-text',
+        ...pos,
+        region: readRect(ctx, 'region') ?? null,
+        textVar: str(ctx, 'textVar', 'text'),
+        ...(args.has('confidenceVar') ? { confidenceVar: str(ctx, 'confidenceVar', '') } : {}),
+        ...(args.has('accurate') ? { accurate: bool(ctx, 'accurate', false) } : {}),
+        ...(args.has('lang') ? { lang: str(ctx, 'lang', 'en-US') } : {}),
+      };
+    }
+    case 'focus-app': {
+      return {
+        id,
+        kind: 'focus-app',
+        ...pos,
+        appName: str(ctx, 'appName', ''),
+        ...(args.has('launchIfMissing') ? { launchIfMissing: bool(ctx, 'launchIfMissing', false) } : {}),
+        ...(args.has('resultVar') ? { resultVar: str(ctx, 'resultVar', '') } : {}),
+      };
+    }
+    case 'call-flow': {
+      // `flowId` is a free-form string (empty string is treated as "not wired
+      // yet"). argVars / returnVars round-trip as raw JSON-ish arrays.
+      const raw = str(ctx, 'flowId', '');
+      return {
+        id,
+        kind: 'call-flow',
+        ...pos,
+        flowId: raw ? raw : null,
+      };
+    }
   }
 }
 
@@ -1396,6 +1462,20 @@ function num(
   if (opts?.min !== undefined && v < opts.min) v = opts.min;
   if (opts?.max !== undefined && v > opts.max) v = opts.max;
   return v;
+}
+
+// Read `minConfidence` (0..1, higher = stricter). Falls back to a legacy
+// `threshold` (0..1, lower = stricter) and flips it via 1 - threshold so old
+// hand-written DSL keeps parsing with roughly the same strictness.
+function readMinConfidence(ctx: BuildCtx): number {
+  const entry = ctx.args.get('minConfidence');
+  if (entry) return num(ctx, 'minConfidence', 0.85, { min: 0, max: 1 });
+  const legacy = ctx.args.get('threshold');
+  if (legacy && legacy.value.type === 'number') {
+    const t = Math.max(0, Math.min(1, legacy.value.value));
+    return 1 - t;
+  }
+  return 0.85;
 }
 
 function str(ctx: BuildCtx, key: string, fallback: string): string {
@@ -1596,9 +1676,11 @@ function readSetVarSource(ctx: BuildCtx, key: string): SetVarSource | null {
         min: numField(o.min, 0),
         max: numField(o.max, 100),
       };
+    case 'last-found-score':
+      return { kind: 'last-found-confidence' };
     case 'last-found-x':
     case 'last-found-y':
-    case 'last-found-score':
+    case 'last-found-confidence':
     case 'elapsed-ms':
     case 'iterations':
     case 'cursor-x':

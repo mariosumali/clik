@@ -1,10 +1,24 @@
 export type MouseButton = 'left' | 'right' | 'middle';
 export type ClickKind = 'single' | 'double' | 'hold';
 
+// Each SequencePoint / fixed target optionally carries a `displayIndex` hint.
+// When present the main process treats (x, y) as LOCAL to that display's bounds
+// and translates them to global screen points at run time. Without the hint,
+// coordinates are global (the historical default, safe for everything legacy).
+export interface SequencePointPayload {
+  x: number;
+  y: number;
+  dwellMs: number;
+  // Per-point repeat — fires the click this many times before advancing to the
+  // next point. 1 (default) preserves legacy behavior.
+  repeat?: number;
+  displayIndex?: number;
+}
+
 export type Target =
   | { kind: 'cursor' }
-  | { kind: 'fixed'; x: number; y: number }
-  | { kind: 'sequence'; points: Array<{ x: number; y: number; dwellMs: number }> };
+  | { kind: 'fixed'; x: number; y: number; displayIndex?: number }
+  | { kind: 'sequence'; points: SequencePointPayload[] };
 
 export type StopCondition =
   | { kind: 'off' }
@@ -13,10 +27,16 @@ export type StopCondition =
 
 export type KillZoneKind = 'corners' | 'edges' | 'rect';
 
+// Which workspace(s) a kill zone applies to. 'global' always applies; the
+// others restrict the zone to that workspace's runner. Defaults to 'global' so
+// installs that pre-date scoping keep their prior behavior.
+export type KillZoneScope = 'global' | 'clicker' | 'sequence' | 'autonomy';
+
 export interface KillZoneBase {
   id: string;
   name: string;
   enabled: boolean;
+  scope?: KillZoneScope;
 }
 
 export type KillZone =
@@ -49,6 +69,13 @@ export interface ClickerConfig {
   // Set by the renderer as a KillZonePayload; the main process resolves presets
   // and rewrites this field to a KillZoneRect[] before handing it to Clicker.
   killZones?: KillZonePayload | KillZoneRect[];
+  // Click-when-idle: if set, the clicker postpones each click until the user
+  // has been idle (no mouse / keyboard) for at least this many ms. 0 disables.
+  idleThresholdMs?: number;
+  // Which workspace the run is coming from (sequence vs clicker). The main
+  // process uses this to filter kill-zones by scope. 'clicker' is the default
+  // when not provided, keeping the old behavior for callers that don't pass it.
+  workspace?: 'clicker' | 'sequence';
 }
 
 export type ClickerStatus = 'idle' | 'running' | 'error';

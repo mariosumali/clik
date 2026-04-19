@@ -44,7 +44,13 @@ export type AutonomyNodeKind =
   | 'hotkey'
   | 'type-text'
   | 'drag'
-  | 'screenshot';
+  | 'screenshot'
+  // Vision / reading
+  | 'read-text'
+  // System
+  | 'focus-app'
+  // Composition
+  | 'call-flow';
 
 export interface AutonomyNodeBase {
   id: string;
@@ -91,7 +97,11 @@ export interface FindNode extends AutonomyNodeBase {
   kind: 'find';
   template: AutonomyTemplate | null;
   searchRegion: AutonomyRect | null;
-  threshold: number; // 0 = perfect, 1 = anything goes; typical 0.12 – 0.30.
+  // Minimum required match confidence (normalized cross-correlation, 0..1).
+  // Higher = stricter. 1.0 = only accept a perfect pixel-identical hit.
+  // 0.85 is a sensible default for UI elements; drop to ~0.7 when the widget
+  // has hover / focus states you don't care about distinguishing.
+  minConfidence: number;
 }
 
 export type BranchCondition =
@@ -148,7 +158,7 @@ export type SetVarSource =
   | { kind: 'literal-string'; value: string }
   | { kind: 'last-found-x' }
   | { kind: 'last-found-y' }
-  | { kind: 'last-found-score' }
+  | { kind: 'last-found-confidence' }
   | { kind: 'elapsed-ms' }
   | { kind: 'iterations' }
   | { kind: 'cursor-x' }
@@ -195,7 +205,8 @@ export interface NotifyNode extends AutonomyNodeBase {
 export interface WaitForTemplateBase extends AutonomyNodeBase {
   template: AutonomyTemplate | null;
   searchRegion: AutonomyRect | null;
-  threshold: number;
+  // See FindNode.minConfidence for semantics.
+  minConfidence: number;
   intervalMs: number;
   timeoutMs: number;
 }
@@ -264,6 +275,41 @@ export interface ScreenshotNode extends AutonomyNodeBase {
   pathVar?: string; // optional var to read the output path from.
 }
 
+// --- Reading / system / composition -----------------------------------------
+
+// Run OCR over a screen region (macOS Vision framework) and store the
+// recognized text in `textVar`. Confidence is stored in `confidenceVar` when
+// provided. Fast ocr uses accurate=false; `accurate=true` uses the precise
+// revision (slower, better CJK / handwriting).
+export interface ReadTextNode extends AutonomyNodeBase {
+  kind: 'read-text';
+  region: AutonomyRect | null; // null = whole primary display
+  textVar: string; // variable to receive the text
+  confidenceVar?: string; // optional variable to receive [0..1] confidence
+  accurate?: boolean; // false by default
+  lang?: string; // primary language hint, e.g. 'en-US'
+}
+
+// Bring a macOS app to the foreground by bundle id or app name. Stores a
+// number in `resultVar` if supplied: 1=success, 0=not-running, -1=failure.
+export interface FocusAppNode extends AutonomyNodeBase {
+  kind: 'focus-app';
+  appName: string; // e.g. 'Safari' OR bundle id 'com.apple.Safari'
+  launchIfMissing?: boolean;
+  resultVar?: string;
+}
+
+// Call another flow as a sub-routine. The sub-flow runs with its own variable
+// scope; `returnVars` lists names that should be lifted back into the caller's
+// scope after completion. `argVars` maps outer var -> inner var so the caller
+// can pass in context.
+export interface CallFlowNode extends AutonomyNodeBase {
+  kind: 'call-flow';
+  flowId: string | null;
+  argVars?: Array<{ from: string; to: string }>;
+  returnVars?: string[];
+}
+
 export type AutonomyNode =
   | StartNode
   | ClickNode
@@ -287,7 +333,10 @@ export type AutonomyNode =
   | HotkeyNode
   | TypeTextNode
   | DragNode
-  | ScreenshotNode;
+  | ScreenshotNode
+  | ReadTextNode
+  | FocusAppNode
+  | CallFlowNode;
 
 // Each node emits edges via named ports. Most nodes have a single 'out'; branch
 // + loop + wait-until have pairs. The runner picks the edge whose fromPort
@@ -332,7 +381,7 @@ export interface AutonomyTick {
   iterations: number;
   elapsedMs: number;
   lastError?: string;
-  lastFound?: { x: number; y: number; score: number } | null;
+  lastFound?: { x: number; y: number; confidence: number } | null;
   vars?: Record<string, number | string>;
   logs?: AutonomyLogEntry[];
 }
@@ -353,7 +402,8 @@ export interface MatchResult {
   found: boolean;
   x?: number;
   y?: number;
-  score?: number;
+  // Confidence in [0, 1]; 1.0 means a pixel-perfect match.
+  confidence?: number;
   err?: string;
 }
 
@@ -369,6 +419,29 @@ export interface RegionPickResult {
   ok: boolean;
   rect?: AutonomyRect;
   reason?: 'cancelled' | 'busy' | 'error';
+}
+
+export interface OcrResult {
+  ok: boolean;
+  text?: string;
+  confidence?: number; // average per-line confidence in [0, 1]
+  err?: string;
+}
+
+export interface FocusAppResult {
+  ok: boolean;
+  // 1 = was already running and activated
+  // 0 = not running (or launched when launchIfMissing=true)
+  // -1 = failure
+  code?: -1 | 0 | 1;
+  err?: string;
+}
+
+export interface RunningApp {
+  bundleId: string;
+  name: string;
+  pid: number;
+  active: boolean;
 }
 
 // Port metadata — shared by renderer and timeline so canvas/timeline/store

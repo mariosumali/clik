@@ -9,11 +9,13 @@ import type {
   AutonomyPort,
   AutonomyTick,
   BranchNode,
+  CallFlowNode,
   ClickNode,
   ClickTarget,
   CounterNode,
   DragNode,
   FindNode,
+  FocusAppNode,
   HotkeyNode,
   KeypressNode,
   LogNode,
@@ -23,6 +25,7 @@ import type {
   NotifyNode,
   RandomBranchNode,
   RandomWaitNode,
+  ReadTextNode,
   ScreenshotNode,
   ScrollNode,
   SetVarNode,
@@ -33,11 +36,28 @@ import type {
   WaitUntilGoneNode,
 } from '../shared/autonomy.js';
 
+// A saved frame for the flow-call stack. When a `call-flow` node runs we push
+// the caller's flow/node + variable snapshot, switch the runner to the callee
+// flow's Start node, and walk it until we hit an End node. At that point we
+// pop, copy back the names listed in `returnVars`, restore the caller state,
+// and continue from the caller's `out` port.
+interface CallFrame {
+  flow: AutonomyFlow;
+  callerNodeId: string;
+  returnVars: string[];
+  savedVars: Record<string, number | string>;
+  savedLoopCounters: Record<string, number>;
+}
+
 interface RunnerState {
   startedAt: number;
   iterations: number;
   currentNodeId: string | null;
-  lastFound: { x: number; y: number; score: number } | null;
+  // The flow currently being walked. Swapped out when a call-flow frame is
+  // pushed/popped. The `flow` on the runner itself still points at the
+  // top-level flow for snapshot reporting.
+  currentFlow: AutonomyFlow;
+  lastFound: { x: number; y: number; confidence: number } | null;
   lastError?: string;
   pendingTimer: NodeJS.Timeout | null;
   cancelled: boolean;
@@ -50,6 +70,16 @@ interface RunnerState {
   loopCounters: Record<string, number>;
   // Bounded ring buffer of log entries surfaced on ticks.
   logs: AutonomyLogEntry[];
+  callStack: CallFrame[];
+  library: Record<string, AutonomyFlow>;
+  // Cycle detection for call-flow — tracks the flow ids currently on the
+  // call stack so the runner throws instead of infinite-looping when a user
+  // wires a cycle.
+  callingFlowIds: Set<string>;
+  // Set true by `call-flow` execution to signal step() that `currentNodeId`
+  // has already been moved into the sub-flow's Start node; step() should
+  // not try to follow an edge from the caller's node. Cleared by step().
+  justCalled?: boolean;
 }
 
 // Default safety cap if the flow doesn't specify one.
@@ -93,22 +123,36 @@ export class AutonomyRunner extends EventEmitter {
     };
   }
 
-  async start(flow: AutonomyFlow): Promise<{ ok: boolean; err?: string }> {
+  async start(
+    flow: AutonomyFlow,
+    library: AutonomyFlow[] = [],
+  ): Promise<{ ok: boolean; err?: string }> {
     if (this.running) this.stop('restarted');
     const startNode = flow.nodes.find((n) => n.kind === 'start');
     if (!startNode) return { ok: false, err: 'no-start-node' };
+
+    const libMap: Record<string, AutonomyFlow> = {};
+    for (const f of library) libMap[f.id] = f;
+    // The top-level flow is always resolvable in its own right, even if the
+    // caller forgot to include it in the library — lets Call Flow reference
+    // the running flow by id for intentional recursion.
+    libMap[flow.id] = flow;
 
     this.flow = flow;
     this.state = {
       startedAt: Date.now(),
       iterations: 0,
       currentNodeId: startNode.id,
+      currentFlow: flow,
       lastFound: null,
       pendingTimer: null,
       cancelled: false,
       vars: {},
       loopCounters: {},
       logs: [],
+      callStack: [],
+      library: libMap,
+      callingFlowIds: new Set([flow.id]),
     };
     this.running = true;
     this.emitTick();
@@ -133,15 +177,15 @@ export class AutonomyRunner extends EventEmitter {
   }
 
   private async step(): Promise<void> {
-    const flow = this.flow;
     const s = this.state;
-    if (!flow || !s || !this.running || s.cancelled) return;
+    if (!s || !this.running || s.cancelled) return;
 
     const nodeId = s.currentNodeId;
     if (!nodeId) {
       this.finish('completed');
       return;
     }
+    const flow = s.currentFlow;
     const node = flow.nodes.find((n) => n.id === nodeId);
     if (!node) {
       this.finish('missing-node');
@@ -160,13 +204,32 @@ export class AutonomyRunner extends EventEmitter {
       const nextPort = await this.execute(node);
       if (!this.running || !this.state || this.state.cancelled) return;
 
+      // `call-flow` sets this flag after moving currentNodeId into the
+      // callee's Start node. Don't try to follow an edge from the caller —
+      // just continue stepping from the new location.
+      if (this.state.justCalled) {
+        this.state.justCalled = false;
+        queueMicrotask(() => this.step());
+        return;
+      }
+
       if (nextPort === null) {
-        // End node reached, or a node explicitly terminated the run.
+        // End-or-terminate: if we're inside a call-flow frame, pop it and
+        // resume the caller. Otherwise the top-level flow is done.
+        if (this.state.callStack.length > 0) {
+          this.returnFromSubFlow();
+          if (!this.state.currentNodeId) {
+            this.finish('completed');
+            return;
+          }
+          queueMicrotask(() => this.step());
+          return;
+        }
         this.finish('completed');
         return;
       }
 
-      const nextId = this.followEdge(flow.edges, node.id, nextPort);
+      const nextId = this.followEdge(this.state.currentFlow.edges, node.id, nextPort);
       if (!nextId) {
         this.finish('dead-end');
         return;
@@ -176,6 +239,31 @@ export class AutonomyRunner extends EventEmitter {
     } catch (err) {
       this.finish(err instanceof Error ? err.message : 'unknown-error');
     }
+  }
+
+  // Pop the top frame, move the runner back into the caller's flow, and
+  // advance to the caller's 'out' successor.
+  private returnFromSubFlow(): void {
+    const s = this.state!;
+    const frame = s.callStack.pop();
+    if (!frame) return;
+    s.callingFlowIds.delete(s.currentFlow.id);
+
+    // Copy requested return variables from the sub-flow scope back into the
+    // caller's saved scope, then swap the scope in.
+    const merged = { ...frame.savedVars };
+    for (const name of frame.returnVars) {
+      if (Object.prototype.hasOwnProperty.call(s.vars, name)) {
+        merged[name] = s.vars[name];
+      }
+    }
+    s.vars = merged;
+    s.loopCounters = { ...frame.savedLoopCounters };
+    s.currentFlow = frame.flow;
+
+    // Advance to the caller's 'out' edge.
+    const nextId = this.followEdge(frame.flow.edges, frame.callerNodeId, 'out');
+    s.currentNodeId = nextId;
   }
 
   // Returns the outbound port name to follow, or null to end the run.
@@ -425,6 +513,68 @@ export class AutonomyRunner extends EventEmitter {
         const branched = await this.evaluateBranch(bn);
         return branched ? 'true' : 'false';
       }
+      case 'read-text': {
+        const rn = node as ReadTextNode;
+        const region = rn.region ?? this.primaryDisplayRegion();
+        const res = await this.helper.ocr({
+          x: region.x,
+          y: region.y,
+          w: region.w,
+          h: region.h,
+          accurate: rn.accurate,
+          lang: rn.lang,
+        });
+        if (!res.ok) throw new Error(res.err ?? 'ocr-failed');
+        s.vars[rn.textVar] = res.text ?? '';
+        if (rn.confidenceVar) s.vars[rn.confidenceVar] = res.confidence ?? 0;
+        return 'out';
+      }
+      case 'focus-app': {
+        const fn = node as FocusAppNode;
+        const name = this.resolveTemplate(fn.appName || '');
+        if (!name) throw new Error('focus-app-empty');
+        const res = await this.helper.focusApp({
+          app: name,
+          launchIfMissing: fn.launchIfMissing,
+        });
+        if (fn.resultVar) s.vars[fn.resultVar] = res.code ?? -1;
+        // Not an error to launch a not-running app — we surface it via resultVar.
+        return 'out';
+      }
+      case 'call-flow': {
+        const cn = node as CallFlowNode;
+        if (!cn.flowId) throw new Error('call-flow-no-target');
+        const sub = s.library[cn.flowId];
+        if (!sub) throw new Error('call-flow-missing');
+        if (s.callingFlowIds.has(sub.id)) throw new Error('call-flow-cycle');
+        const subStart = sub.nodes.find((n) => n.kind === 'start');
+        if (!subStart) throw new Error('call-flow-no-start');
+
+        // Build the child scope from argVars — each entry maps an OUTER var
+        // name to an INNER var name. Missing outer names simply produce an
+        // empty string in the child scope (never `undefined`).
+        const childVars: Record<string, number | string> = {};
+        for (const m of cn.argVars ?? []) {
+          const v = s.vars[m.from];
+          if (v !== undefined) childVars[m.to] = v;
+        }
+        s.callStack.push({
+          flow: s.currentFlow,
+          callerNodeId: cn.id,
+          returnVars: cn.returnVars ?? [],
+          savedVars: s.vars,
+          savedLoopCounters: s.loopCounters,
+        });
+        s.callingFlowIds.add(sub.id);
+        s.vars = childVars;
+        s.loopCounters = {};
+        s.currentFlow = sub;
+        s.currentNodeId = subStart.id;
+        // Tell step() we've already repositioned into the sub-flow's Start
+        // node so it doesn't follow an edge from the caller's call-flow node.
+        s.justCalled = true;
+        return 'out';
+      }
       default:
         throw new Error('unknown-node-kind');
     }
@@ -442,8 +592,8 @@ export class AutonomyRunner extends EventEmitter {
         return s.lastFound?.x ?? 0;
       case 'last-found-y':
         return s.lastFound?.y ?? 0;
-      case 'last-found-score':
-        return s.lastFound?.score ?? 1;
+      case 'last-found-confidence':
+        return s.lastFound?.confidence ?? 0;
       case 'elapsed-ms':
         return Date.now() - s.startedAt;
       case 'iterations':
@@ -460,7 +610,9 @@ export class AutonomyRunner extends EventEmitter {
     }
   }
 
-  private async runFind(node: FindNode): Promise<{ x: number; y: number; score: number } | null> {
+  private async runFind(
+    node: FindNode,
+  ): Promise<{ x: number; y: number; confidence: number } | null> {
     if (!node.template) throw new Error('no-template');
     const region = node.searchRegion ?? this.primaryDisplayRegion();
     const res = await this.helper.match({
@@ -469,11 +621,12 @@ export class AutonomyRunner extends EventEmitter {
       y: region.y,
       w: region.w,
       h: region.h,
-      threshold: node.threshold,
+      minConfidence: node.minConfidence,
     });
     if (!res.ok) throw new Error(res.err ?? 'match-failed');
     if (!res.found || res.cx === undefined || res.cy === undefined) return null;
-    return { x: res.cx, y: res.cy, score: res.score ?? 0 };
+    const confidence = res.confidence ?? (res.score !== undefined ? 1 - res.score : 0);
+    return { x: res.cx, y: res.cy, confidence };
   }
 
   private async evaluateBranch(node: BranchNode): Promise<boolean> {
@@ -533,7 +686,7 @@ export class AutonomyRunner extends EventEmitter {
       if (k === 'elapsedMs') return String(Date.now() - st.startedAt);
       if (k === 'lastFound.x') return String(st.lastFound?.x ?? '');
       if (k === 'lastFound.y') return String(st.lastFound?.y ?? '');
-      if (k === 'lastFound.score') return String(st.lastFound?.score ?? '');
+      if (k === 'lastFound.confidence') return String(st.lastFound?.confidence ?? '');
       const v = st.vars[k];
       return v === undefined ? '' : String(v);
     });

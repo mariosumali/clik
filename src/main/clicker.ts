@@ -14,6 +14,9 @@ export class Clicker extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private lastError: string | undefined;
   private seqIndex = 0;
+  // How many times we've fired at the current sequence index. When >= that
+  // point's `repeat` count we advance seqIndex and reset to 0.
+  private seqRepeatsLeftAtIndex = 0;
   // Target timestamp for the next click. Advancing this by the intended delay
   // (rather than scheduling `delay` ms after each click completes) keeps the
   // average CPS aligned with the requested interval even when the helper
@@ -64,6 +67,7 @@ export class Clicker extends EventEmitter {
     this.nextTickAt = this.startedAt;
     this.lastError = undefined;
     this.seqIndex = 0;
+    this.seqRepeatsLeftAtIndex = 0;
     // Main has already resolved presets into rectangles; anything else is
     // treated as "no zones" so the engine never tries to interpret raw preset
     // payloads on its own.
@@ -129,13 +133,49 @@ export class Clicker extends EventEmitter {
       clickX = pt.x;
       clickY = pt.y;
       nextDelay = this.applyHumanize(pt.dwellMs);
-      this.seqIndex = (idx + 1) % points.length;
+      // Per-point repeat: hold on this index until we've fired `repeat` times,
+      // then advance. `repeat` < 1 is treated as 1.
+      const repeat = Math.max(1, pt.repeat ?? 1);
+      this.seqRepeatsLeftAtIndex += 1;
+      if (this.seqRepeatsLeftAtIndex >= repeat) {
+        this.seqRepeatsLeftAtIndex = 0;
+        this.seqIndex = (idx + 1) % points.length;
+      }
     } else {
       if (cfg.target.kind === 'fixed') {
         clickX = cfg.target.x;
         clickY = cfg.target.y;
       }
       nextDelay = this.applyHumanize(cfg.intervalMs);
+    }
+
+    // Click-when-idle: postpone this click until the user has been idle for
+    // at least `idleThresholdMs`. We poll the helper with a cadence equal to
+    // the threshold (min 200ms, max 2s) so the re-check loop never busy-loops
+    // but also reacts within a sensible window. The check is best-effort — if
+    // the helper isn't ready or the call fails, we fall through and click.
+    const idleThreshold = Math.max(0, Math.round(cfg.idleThresholdMs ?? 0));
+    if (idleThreshold > 0) {
+      try {
+        const res = await this.helper.idle();
+        const secondsIdle = res.ok ? (res.seconds ?? 0) : Infinity;
+        const idleMs = secondsIdle * 1000;
+        if (idleMs < idleThreshold) {
+          const waitMs = Math.min(2000, Math.max(200, idleThreshold - idleMs));
+          // Reschedule without advancing the tick — we still want to fire at
+          // this (same) sequence index once the user goes idle.
+          this.seqRepeatsLeftAtIndex = Math.max(0, this.seqRepeatsLeftAtIndex - 1);
+          if (cfg.target.kind === 'sequence' && this.seqRepeatsLeftAtIndex === 0) {
+            // Rewind the index we just advanced.
+            const len = cfg.target.points.length;
+            this.seqIndex = (this.seqIndex + len - 1) % len;
+          }
+          this.scheduleNext(waitMs);
+          return;
+        }
+      } catch {
+        // Fall through — clicking on a failed idle probe is the safer default.
+      }
     }
 
     if (this.killZones.length > 0) {

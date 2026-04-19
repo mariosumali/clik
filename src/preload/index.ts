@@ -15,10 +15,18 @@ import type {
   AutonomyRect,
   AutonomyTick,
   CaptureResult,
+  FocusAppResult,
   MatchResult,
+  OcrResult,
   RegionPickResult,
+  RunningApp,
   SampleResult,
 } from '../shared/autonomy.js';
+import type {
+  PathRecorderStatus,
+  PathRecording,
+  Trigger,
+} from '../shared/triggers.js';
 
 function parseMode(): WindowMode {
   const arg = process.argv.find((a) => a.startsWith('--clik-mode='));
@@ -76,8 +84,18 @@ const api = {
   regionPickerCancel(): Promise<RegionPickResult> {
     return ipcRenderer.invoke(IPC.regionPickerCancel);
   },
-  autonomyStart(flow: AutonomyFlow): Promise<{ ok: boolean; err?: string }> {
+  autonomyStart(
+    flow: AutonomyFlow,
+    library?: AutonomyFlow[],
+  ): Promise<{ ok: boolean; err?: string }> {
+    // Keep the single-arg call working so existing call-sites don't change,
+    // but when a library is supplied we wrap in an envelope so main knows to
+    // refresh its cache and pass the library to the runner (for call-flow).
+    if (library) return ipcRenderer.invoke(IPC.autonomyStart, { flow, library });
     return ipcRenderer.invoke(IPC.autonomyStart, flow);
+  },
+  setFlowLibrary(library: AutonomyFlow[]): void {
+    ipcRenderer.send('autonomy:library:set', library);
   },
   autonomyStop(): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke(IPC.autonomyStop);
@@ -85,11 +103,51 @@ const api = {
   autonomyCapture(rect: AutonomyRect): Promise<CaptureResult> {
     return ipcRenderer.invoke(IPC.autonomyCapture, rect);
   },
-  autonomyMatch(args: { png: string; rect: AutonomyRect; threshold: number }): Promise<MatchResult> {
+  autonomyMatch(args: {
+    png: string;
+    rect: AutonomyRect;
+    minConfidence: number;
+  }): Promise<MatchResult> {
     return ipcRenderer.invoke(IPC.autonomyMatch, args);
   },
   autonomySample(pt: { x: number; y: number }): Promise<SampleResult> {
     return ipcRenderer.invoke(IPC.autonomySample, pt);
+  },
+  ocrRecognize(req: {
+    rect: AutonomyRect | null;
+    accurate?: boolean;
+    lang?: string;
+  }): Promise<OcrResult> {
+    return ipcRenderer.invoke(IPC.ocrRecognize, req);
+  },
+  focusApp(req: { app: string; launchIfMissing?: boolean }): Promise<FocusAppResult> {
+    return ipcRenderer.invoke(IPC.focusApp, req);
+  },
+  listApps(): Promise<{ ok: boolean; apps?: RunningApp[]; err?: string }> {
+    return ipcRenderer.invoke(IPC.listApps);
+  },
+  idleSeconds(): Promise<{ ok: boolean; seconds?: number; err?: string }> {
+    return ipcRenderer.invoke(IPC.idleSeconds);
+  },
+  pathRecordStart(): Promise<PathRecorderStatus> {
+    return ipcRenderer.invoke(IPC.pathRecordStart);
+  },
+  pathRecordStop(): Promise<PathRecording | null> {
+    return ipcRenderer.invoke(IPC.pathRecordStop);
+  },
+  onPathRecordTick(cb: (status: PathRecorderStatus) => void): () => void {
+    const handler = (_e: unknown, status: PathRecorderStatus) => cb(status);
+    ipcRenderer.on(IPC.pathRecordTick, handler);
+    return () => ipcRenderer.off(IPC.pathRecordTick, handler);
+  },
+  triggersSet(list: Trigger[]): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke(IPC.triggersSet, list);
+  },
+  triggersRemove(id: string): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke(IPC.triggersRemove, id);
+  },
+  triggersFire(flowId: string): Promise<{ ok: boolean; err?: string }> {
+    return ipcRenderer.invoke(IPC.triggersFire, flowId);
   },
   onAutonomyTick(cb: (tick: AutonomyTick) => void): () => void {
     const handler = (_e: unknown, tick: AutonomyTick) => cb(tick);
@@ -137,6 +195,18 @@ const api = {
     const handler = (_e: unknown, reg: HotkeyRegistration) => cb(reg);
     ipcRenderer.on(IPC.hotkeyStatus, handler);
     return () => ipcRenderer.off(IPC.hotkeyStatus, handler);
+  },
+  // Cross-window persisted-state sync. Each renderer fires
+  // `broadcastState(slice)` whenever its persisted zustand slice changes; the
+  // main process relays the payload to every OTHER window, which receives it
+  // here via `onStateBroadcast` and applies it to its own store.
+  broadcastState(slice: unknown): void {
+    ipcRenderer.send(IPC.stateBroadcast, slice);
+  },
+  onStateBroadcast(cb: (slice: unknown) => void): () => void {
+    const handler = (_e: unknown, slice: unknown) => cb(slice);
+    ipcRenderer.on(IPC.stateBroadcast, handler);
+    return () => ipcRenderer.off(IPC.stateBroadcast, handler);
   },
 };
 

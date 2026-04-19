@@ -36,6 +36,9 @@ import type {
 import { Clicker } from './clicker.js';
 import { HelperClient } from './helper.js';
 import { AutonomyRunner } from './autonomy.js';
+import { TriggersManager } from './triggers.js';
+import { PathRecorder } from './pathRecorder.js';
+import type { Trigger, PathRecorderStatus, PathRecording } from '../shared/triggers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +50,12 @@ let tray: Tray | null = null;
 let helper: HelperClient | null = null;
 let clicker: Clicker | null = null;
 let autonomy: AutonomyRunner | null = null;
+let triggers: TriggersManager | null = null;
+let pathRecorder: PathRecorder | null = null;
+// The renderer sends the authoritative flow library over IPC whenever it
+// changes — main doesn't persist flows itself, it just caches the latest
+// list so triggers and direct-fires can start a known flow.
+let flowLibrary: AutonomyFlow[] = [];
 // Per-workspace global start/stop hotkeys. Each slot owns one accelerator; the
 // renderer re-registers every slot on boot so the defaults below are only used
 // during the pre-renderer warm-up window.
@@ -188,6 +197,9 @@ function createMainWindow(): void {
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindow) sendSnapshotTo(mainWindow);
+  });
   loadRenderer(mainWindow, 'full');
 
   // Close-to-tray: intercept the window close and hide the window instead of
@@ -225,6 +237,9 @@ function createPopoverWindow(): void {
       nodeIntegration: false,
       additionalArguments: ['--clik-mode=popover'],
     },
+  });
+  popoverWindow.webContents.on('did-finish-load', () => {
+    if (popoverWindow) sendSnapshotTo(popoverWindow);
   });
   loadRenderer(popoverWindow, 'popover');
 
@@ -514,6 +529,18 @@ function broadcastAutonomyTick(payload: unknown): void {
   popoverWindow?.webContents.send(IPC.autonomyTick, payload);
 }
 
+// Push a current runtime snapshot to `win` so a freshly-loaded window catches
+// up on in-flight runs without waiting for the next engine tick (the clicker
+// only emits on click events, so a popover opened mid-run would otherwise
+// render as Idle until the next click).
+function sendSnapshotTo(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  const clickerSnap = clicker?.snapshot();
+  if (clickerSnap) win.webContents.send(IPC.clickerTick, clickerSnap);
+  const autonomySnap = autonomy?.snapshot();
+  if (autonomySnap) win.webContents.send(IPC.autonomyTick, autonomySnap);
+}
+
 function broadcastHotkeyFire(target: HotkeyTarget): void {
   // Always send to a *visible* renderer so the fire handler observes the exact
   // in-memory config the user is looking at (vs. whatever is persisted). If
@@ -710,9 +737,15 @@ function wireIpc(): void {
     return res;
   });
 
-  ipcMain.handle(IPC.autonomyStart, async (_e, flow: AutonomyFlow) => {
+  ipcMain.handle(IPC.autonomyStart, async (_e, arg: AutonomyFlow | { flow: AutonomyFlow; library?: AutonomyFlow[] }) => {
     if (!autonomy) return { ok: false, err: 'not-ready' };
-    return autonomy.start(flow);
+    // Accept either the legacy shape (bare flow) or a {flow, library} envelope
+    // — the renderer will move to the latter as it adds call-flow support.
+    if ('flow' in arg && arg.flow) {
+      if (arg.library) flowLibrary = arg.library;
+      return autonomy.start(arg.flow, arg.library ?? flowLibrary);
+    }
+    return autonomy.start(arg as AutonomyFlow, flowLibrary);
   });
 
   ipcMain.handle(IPC.autonomyStop, () => {
@@ -738,7 +771,7 @@ function wireIpc(): void {
   ipcMain.handle(IPC.autonomyMatch, async (_e, args: {
     png: string;
     rect: AutonomyRect;
-    threshold: number;
+    minConfidence: number;
   }): Promise<MatchResult> => {
     if (!helper) return { ok: false, found: false, err: 'helper-not-ready' };
     const res = await helper.match({
@@ -747,15 +780,16 @@ function wireIpc(): void {
       y: args.rect.y,
       w: args.rect.w,
       h: args.rect.h,
-      threshold: args.threshold,
+      minConfidence: args.minConfidence,
     });
     if (!res.ok) return { ok: false, found: false, err: res.err };
+    const confidence = res.confidence ?? (res.score !== undefined ? 1 - res.score : undefined);
     return {
       ok: true,
       found: !!res.found,
       x: res.cx,
       y: res.cy,
-      score: res.score,
+      confidence,
     };
   });
 
@@ -826,6 +860,95 @@ function wireIpc(): void {
       .catch(() => undefined);
     return { ok: true };
   });
+
+  // --- OCR / focus-app / idle / list-apps ------------------------------------
+  ipcMain.handle(IPC.ocrRecognize, async (_e, req: {
+    rect: AutonomyRect | null;
+    accurate?: boolean;
+    lang?: string;
+  }) => {
+    if (!helper) return { ok: false, err: 'helper-not-ready' };
+    // Null rect means "whole primary display" — resolve here so the helper
+    // always sees concrete pixels.
+    let rect = req.rect;
+    if (!rect) {
+      const primary = screen.getPrimaryDisplay().bounds;
+      rect = { x: primary.x, y: primary.y, w: primary.width, h: primary.height };
+    }
+    const res = await helper.ocr({
+      x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+      accurate: req.accurate, lang: req.lang,
+    });
+    return res;
+  });
+
+  ipcMain.handle(IPC.focusApp, async (_e, req: { app: string; launchIfMissing?: boolean }) => {
+    if (!helper) return { ok: false, err: 'helper-not-ready' };
+    return helper.focusApp(req);
+  });
+
+  ipcMain.handle(IPC.listApps, async () => {
+    if (!helper) return { ok: false, err: 'helper-not-ready' };
+    return helper.listApps();
+  });
+
+  ipcMain.handle(IPC.idleSeconds, async () => {
+    if (!helper) return { ok: false, err: 'helper-not-ready' };
+    return helper.idle();
+  });
+
+  // --- Path recorder ---------------------------------------------------------
+  ipcMain.handle(IPC.pathRecordStart, (): PathRecorderStatus => {
+    if (!pathRecorder) pathRecorder = new PathRecorder();
+    return pathRecorder.start();
+  });
+
+  ipcMain.handle(IPC.pathRecordStop, (): PathRecording | null => {
+    if (!pathRecorder) return null;
+    return pathRecorder.stop();
+  });
+
+  // --- Triggers --------------------------------------------------------------
+  ipcMain.handle(IPC.triggersSet, (_e, list: Trigger[]): { ok: boolean } => {
+    if (!triggers) return { ok: false };
+    triggers.setTriggers(list);
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.triggersRemove, (_e, id: string): { ok: boolean } => {
+    if (!triggers) return { ok: false };
+    triggers.removeTrigger(id);
+    return { ok: true };
+  });
+
+  // The renderer ships its current flow library here so triggers (or direct
+  // `triggersFire` invocations) can launch a flow without the renderer being
+  // open. Main just caches the latest snapshot — zustand remains the source
+  // of truth on the renderer side.
+  ipcMain.on('autonomy:library:set', (_e, library: AutonomyFlow[]) => {
+    flowLibrary = library ?? [];
+  });
+
+  ipcMain.handle(IPC.triggersFire, async (_e, flowId: string) => {
+    if (!autonomy) return { ok: false, err: 'not-ready' };
+    const flow = flowLibrary.find((f) => f.id === flowId);
+    if (!flow) return { ok: false, err: 'flow-not-found' };
+    return autonomy.start(flow, flowLibrary);
+  });
+
+  // Renderer-to-renderer state sync. Electron's localStorage `storage` event
+  // is unreliable across BrowserWindows, so every window pushes its persisted
+  // zustand slice through main and we fan it out to every OTHER webContents.
+  // `ipcMain.on` (not `.handle`) is used because no reply is needed — this is
+  // a one-way broadcast.
+  ipcMain.on(IPC.stateBroadcast, (event, slice: unknown) => {
+    const senderId = event.sender.id;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      if (win.webContents.id === senderId) continue;
+      win.webContents.send(IPC.stateBroadcast, slice);
+    }
+  });
 }
 
 app.whenReady().then(() => {
@@ -857,6 +980,21 @@ app.whenReady().then(() => {
       updateTrayRunningState();
     }
     broadcastAutonomyTick(state);
+  });
+
+  triggers = new TriggersManager(helper, () => autonomyRunning);
+  triggers.on('fire', (t: Trigger) => {
+    const flow = flowLibrary.find((f) => f.id === t.flowId);
+    if (!flow) return;
+    if (t.skipIfRunning && autonomyRunning) return;
+    autonomy?.start(flow, flowLibrary).catch(() => undefined);
+  });
+  triggers.start();
+
+  pathRecorder = new PathRecorder();
+  pathRecorder.on('tick', (status: PathRecorderStatus) => {
+    mainWindow?.webContents.send(IPC.pathRecordTick, status);
+    popoverWindow?.webContents.send(IPC.pathRecordTick, status);
   });
 
   wireIpc();
@@ -891,5 +1029,7 @@ app.on('before-quit', () => {
     powerBlockerId = null;
   }
   autonomy?.stop();
+  triggers?.stop();
+  pathRecorder?.stop(false);
   helper?.stop();
 });

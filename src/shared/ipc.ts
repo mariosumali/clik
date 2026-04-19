@@ -23,6 +23,21 @@ export const IPC = {
   autonomyCapture: 'autonomy:capture',
   autonomyMatch: 'autonomy:match',
   autonomySample: 'autonomy:sample',
+  // OCR, app focus, idle detection (helper-backed).
+  ocrRecognize: 'vision:ocr',
+  focusApp: 'system:focus-app',
+  listApps: 'system:list-apps',
+  idleSeconds: 'system:idle-seconds',
+  // Path recorder — polls the cursor from the main process at ~60Hz.
+  pathRecordStart: 'path:record:start',
+  pathRecordStop: 'path:record:stop',
+  pathRecordTick: 'path:record:tick',
+  // Scheduling triggers — time / event based autonomy launches.
+  triggersList: 'triggers:list',
+  triggersSet: 'triggers:set',
+  triggersRemove: 'triggers:remove',
+  triggersFire: 'triggers:fire',
+  triggersStatus: 'triggers:status',
   settingsLaunchAtLoginGet: 'settings:launch-at-login:get',
   settingsLaunchAtLoginSet: 'settings:launch-at-login:set',
   settingsAlwaysOnTopSet: 'settings:always-on-top:set',
@@ -32,4 +47,9 @@ export const IPC = {
   settingsPreventSleepSet: 'settings:prevent-sleep:set',
   settingsOpenAccessibility: 'settings:open-accessibility',
   settingsOpenScreenRecording: 'settings:open-screen-recording',
+  // Cross-window renderer-state sync. Each renderer publishes the persisted
+  // slice of its zustand store here whenever it changes; the main process
+  // rebroadcasts it to every OTHER window so every open renderer (full app,
+  // popover, etc.) stays in lockstep on theme / config / modules / hotkeys.
+  stateBroadcast: 'state:broadcast',
 } as const;

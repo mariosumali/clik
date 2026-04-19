@@ -80,7 +80,7 @@ try {
         y: 200,
         template: null,
         searchRegion: { x: 0, y: 0, w: 100, h: 100 },
-        threshold: 0.2,
+        minConfidence: 0.85,
       },
       {
         id: 'branch_a6',
@@ -104,7 +104,7 @@ try {
         y: 320,
         template: null,
         searchRegion: null,
-        threshold: 0.2,
+        minConfidence: 0.85,
         intervalMs: 250,
         timeoutMs: 5000,
       },

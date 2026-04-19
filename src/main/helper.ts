@@ -25,9 +25,21 @@ export interface HelperResponse {
   found?: boolean;
   cx?: number;
   cy?: number;
+  // Confidence in [0, 1] where 1.0 = perfect match. Always emitted by current
+  // helpers. `score` is a legacy SAD-style (0 = perfect, 1 = worst) view kept
+  // for back-compat; new callers should prefer `confidence`.
+  confidence?: number;
   score?: number;
   // capture
   clipboardOk?: boolean;
+  // idle
+  seconds?: number;
+  // focus-app
+  code?: number;
+  // ocr
+  text?: string;
+  // list-apps
+  apps?: Array<{ bundleId: string; name: string; pid: number; active: boolean }>;
 }
 
 export interface ClickRequest {
@@ -93,7 +105,10 @@ export interface MatchRequest {
   y: number;
   w: number;
   h: number;
-  threshold?: number;
+  // Minimum normalized-cross-correlation confidence (0..1) required for the
+  // helper to report `found: true`. Higher = stricter. Default in the helper
+  // is 0.85 if omitted.
+  minConfidence?: number;
 }
 
 export function resolveHelperPath(): string {
@@ -198,6 +213,29 @@ export class HelperClient {
 
   async drag(req: DragRequest): Promise<HelperResponse> {
     return this.send({ cmd: 'drag', ...req });
+  }
+
+  async idle(): Promise<HelperResponse> {
+    return this.send({ cmd: 'idle' });
+  }
+
+  async ocr(req: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    accurate?: boolean;
+    lang?: string;
+  }): Promise<HelperResponse> {
+    return this.send({ cmd: 'ocr', ...req });
+  }
+
+  async focusApp(req: { app: string; launchIfMissing?: boolean }): Promise<HelperResponse> {
+    return this.send({ cmd: 'focus-app', ...req });
+  }
+
+  async listApps(): Promise<HelperResponse> {
+    return this.send({ cmd: 'list-apps' });
   }
 
   private send(payload: Record<string, unknown>): Promise<HelperResponse> {
