@@ -16,9 +16,13 @@ npm install
 npm run dev
 ```
 
-The Swift helper (`resources/clik-helper`) and the menubar tray icon
-(`resources/trayTemplate*.png`) are built automatically before `dev` and
-`build`.
+The Swift helper (`resources/clik-helper`), the menubar tray template
+(`resources/trayTemplate*.png`), and the packaged app icon (`resources/Clik.icns`)
+are produced before `dev` and `build`. `build:app-icon` draws the multi-size
+PNGs into a fresh `resources/Clik.iconset/` and runs `iconutil` on macOS (on
+other platforms the step skips and Forge falls back to a default icon). The
+generated `.icns` / `.iconset` are gitignored so each clone gets them from the
+scripts, not from Git.
 
 On first click, macOS prompts for **Accessibility** permission under **System
 Settings → Privacy & Security → Accessibility**. Toggle **Clik** (or, during
@@ -37,6 +41,7 @@ matching. Preferences → Permissions has shortcuts to both panes.
 | `npm run build`        | production bundle (main, preload, renderer, helper)  |
 | `npm run build:helper` | compile the Swift helper only                        |
 | `npm run build:icons`  | regenerate the tray template PNGs                    |
+| `npm run build:app-icon` | build `resources/Clik.icns` from `Clik.iconset`   |
 | `npm run package`      | build + `electron-forge package` (produces `.app`)   |
 | `npm run make`         | build + DMG via `@electron-forge/maker-dmg`          |
 | `npm run typecheck`    | run `tsc --noEmit` for node + web projects           |
@@ -50,10 +55,12 @@ sidebar — Clicker, Sequence, Autonomy, Run Log — plus a Preferences modal
 reached from the gear.
 
 **Menubar popover.** A crosshair sits in the macOS menu bar the whole time the
-app is running. Click it for a 320×420 popover with the essentials: interval,
-button, live stats, and a big **START / STOP**. Click outside to dismiss.
-Right-click the tray for *Open CLIK* and *Quit*. Useful for firing a quick run
-without pulling the full window to the front.
+app is running. Click it for a 320×560 popover made of configurable modules
+(interval, mouse, target, stop, humanize, theme, accent, hotkey, stats, and the
+required status bar + start control). Reorder or hide modules in **Preferences
+→ Menu-bar popover**. Click outside to dismiss. Right-click the tray for *Open
+CLIK* and *Quit*. Useful for firing a quick run without pulling the full window
+to the front.
 
 If you tweak the interval in one shell, it's reflected next time you open the
 other.
@@ -83,6 +90,16 @@ Node kinds include `click`, `move`, `drag`, `scroll`, `keypress`, `hotkey`,
 (template matching via `ScreenCaptureKit`), `screenshot`, `log`, `notify`,
 `stop-error`, and `end`. Flows are persisted per-workspace and have in-app
 undo / redo.
+
+**Scheduling triggers** (in Autonomy) start a saved flow from the main process
+without you pressing Start: **interval** (every *n* ms, minimum 1s), **daily**
+(local time), or **app-launch** (when a given macOS app bundle ID becomes
+frontmost). The renderer owns the list; the scheduler runs in the main process
+and skips overlapping fires when you enable *skip if already running*.
+
+**Path recording** captures the cursor track at ~60 Hz for use in flows (shared
+format in `src/shared/triggers.ts`; playback wiring lands in the graph as it
+ships).
 
 **Run Log.** Every clicker and sequence run lands here with workspace,
 interval, button, kind, target, stop condition, humanize, click count,
@@ -133,9 +150,10 @@ Opened from the sidebar gear. Covers:
 native/helper.swift         Swift driver — reads JSON per line, drives CGEventPost + ScreenCaptureKit
 native/build.sh             swiftc -> resources/clik-helper (universal arm64 + x86_64)
 native/build-tray-icon.mjs  generator for resources/trayTemplate*.png
+native/build-app-icon.mjs   generates Clik.iconset PNGs + iconutil -> resources/Clik.icns
 
-src/shared/                 types, IPC channel names, autonomy models + DSL
-src/main/                   Electron main (windows, tray, popover, IPC, hotkeys, helper orchestration)
+src/shared/                 types, IPC channel names, autonomy models + DSL, triggers + path samples
+src/main/                   Electron main (windows, tray, popover, IPC, hotkeys, helper, triggers, path recorder)
 src/preload/                contextBridge -> window.clik
 src/renderer/               React UI
   src/App.tsx               full-app shell
