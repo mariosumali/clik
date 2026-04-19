@@ -8,12 +8,20 @@ interface NavEntry {
 
 const nav: NavEntry[] = [
   { id: 'clicker', label: 'Clicker' },
-  { id: 'sequence', label: 'Sequence', stub: true },
-  { id: 'hotkeys', label: 'Hotkeys' },
-  { id: 'run-log', label: 'Run Log', stub: true },
+  { id: 'sequence', label: 'Sequence' },
+  { id: 'autonomy', label: 'Autonomy' },
+  { id: 'run-log', label: 'Run Log' },
 ];
 
 export function Sidebar() {
+  const collapsed = useStore((s) => s.sidebarCollapsed);
+  const toggle = useStore((s) => s.toggleSidebar);
+
+  if (collapsed) return <CollapsedRail onExpand={toggle} />;
+  return <ExpandedSidebar onCollapse={toggle} />;
+}
+
+function ExpandedSidebar({ onCollapse }: { onCollapse: () => void }) {
   const route = useStore((s) => s.route);
   const status = useStore((s) => s.status);
   const setRoute = useStore((s) => s.setRoute);
@@ -24,7 +32,7 @@ export function Sidebar() {
       className="w-[240px] shrink-0 h-full flex flex-col bg-[var(--color-ink)]"
       style={{ borderRight: '1px solid var(--color-line)' }}
     >
-      <div className="drag-region h-[52px] pl-[78px] pr-5 flex items-center justify-between border-b border-[var(--color-line)]">
+      <div className="drag-region h-[52px] pl-[78px] pr-2 flex items-center justify-between border-b border-[var(--color-line)]">
         <div className="flex items-center gap-3 no-drag">
           <Logo />
           <div>
@@ -32,6 +40,15 @@ export function Sidebar() {
             <div className="text-[10px] tracking-[0.12em] text-[var(--color-muted)]">v1.0.4 · macOS</div>
           </div>
         </div>
+        <button
+          type="button"
+          className="icon-btn no-drag"
+          onClick={onCollapse}
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+        >
+          <Chevron direction="left" />
+        </button>
       </div>
 
       <div className="px-5 py-4 border-b border-[var(--color-line)] flex items-center gap-2">
@@ -84,6 +101,85 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  );
+}
+
+function CollapsedRail({ onExpand }: { onExpand: () => void }) {
+  const route = useStore((s) => s.route);
+  const status = useStore((s) => s.status);
+  const setRoute = useStore((s) => s.setRoute);
+  const openSettings = useStore((s) => s.openSettings);
+
+  const running = status === 'running';
+
+  return (
+    <aside
+      className="w-[44px] shrink-0 h-full flex flex-col bg-[var(--color-ink)]"
+      style={{ borderRight: '1px solid var(--color-line)' }}
+    >
+      {/* Drag region matches expanded header height so the traffic lights area
+          above stays draggable and visually consistent. */}
+      <div className="drag-region h-[52px] border-b border-[var(--color-line)]" />
+
+      <div className="pt-3 pb-3 border-b border-[var(--color-line)] flex flex-col items-center gap-3">
+        <button
+          type="button"
+          className="icon-btn no-drag"
+          onClick={onExpand}
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
+        >
+          <Chevron direction="right" />
+        </button>
+        <span
+          className="inline-block w-[9px] h-[9px]"
+          title={running ? 'Running' : 'Idle'}
+          aria-label={running ? 'Running' : 'Idle'}
+          style={{
+            background: running ? 'var(--color-accent)' : 'var(--color-cream-dim)',
+            boxShadow: running ? '0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent)' : undefined,
+          }}
+        />
+      </div>
+
+      <nav className="flex flex-col items-center pt-3 gap-1">
+        {nav.map((n) => (
+          <button
+            key={n.id}
+            type="button"
+            className="rail-btn no-drag"
+            data-active={route === n.id}
+            onClick={() => !n.stub && setRoute(n.id)}
+            title={n.stub ? `${n.label} · Coming soon` : n.label}
+            aria-label={n.label}
+            style={n.stub ? { opacity: 0.45 } : undefined}
+          >
+            <span className="nav-glyph" />
+          </button>
+        ))}
+      </nav>
+
+      <div className="mt-auto pb-3 flex flex-col items-center">
+        <button
+          type="button"
+          className="icon-btn no-drag"
+          onClick={openSettings}
+          aria-label="Open settings"
+          title="Settings"
+        >
+          <GearGlyph />
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function Chevron({ direction }: { direction: 'left' | 'right' }) {
+  const d = direction === 'left' ? 'M9 3 L5 8 L9 13' : 'M5 3 L9 8 L5 13';
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+      <path d={d} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="square" strokeLinejoin="miter" />
+    </svg>
   );
 }
 

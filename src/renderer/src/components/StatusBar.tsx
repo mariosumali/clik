@@ -1,12 +1,20 @@
 import { useStore } from '../store';
 import { formatAccelerator } from '../lib/hotkey';
+import type { HotkeyTarget } from '../../../shared/types';
 
 export function StatusBar() {
   const status = useStore((s) => s.status);
   const button = useStore((s) => s.button);
   const target = useStore((s) => s.target);
   const lastError = useStore((s) => s.lastError);
-  const hotkey = useStore((s) => s.startStopHotkey);
+  const route = useStore((s) => s.route);
+  const hotkeys = useStore((s) => s.hotkeys);
+
+  // Surface the hotkey for the workspace the user is looking at; the run log
+  // is informational so we fall back to the clicker slot there.
+  const activeTarget: HotkeyTarget =
+    route === 'sequence' ? 'sequence' : route === 'autonomy' ? 'autonomy' : 'clicker';
+  const hotkey = hotkeys[activeTarget];
 
   const buttonLabel = `${button}-click`.toUpperCase();
   const targetLabel = target.kind === 'cursor' ? 'CURSOR' : target.kind === 'fixed' ? `(${target.x}, ${target.y})` : 'SEQ';

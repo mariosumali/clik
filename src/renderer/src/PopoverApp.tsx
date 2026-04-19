@@ -1,23 +1,40 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useStore } from './store';
 import { Stepper } from './components/primitives/Stepper';
 import { Segment } from './components/primitives/Segment';
 import { formatAccelerator } from './lib/hotkey';
 import { formatCps, formatElapsed, cadenceToMs } from './lib/format';
-import type { MouseButton } from '../../shared/types';
+import type { ClickKind, MouseButton, StopCondition, Target } from '../../shared/types';
+
+type StopKind = StopCondition['kind'];
+type TargetKind = Target['kind'];
 
 export function PopoverApp() {
   const cadence = useStore((s) => s.cadence);
   const setCadence = useStore((s) => s.setCadence);
   const button = useStore((s) => s.button);
   const setButton = useStore((s) => s.setButton);
+  const kind = useStore((s) => s.kind);
+  const setKind = useStore((s) => s.setKind);
+  const target = useStore((s) => s.target);
+  const setTarget = useStore((s) => s.setTarget);
+  const stop = useStore((s) => s.stop);
+  const setStop = useStore((s) => s.setStop);
+  const humanize = useStore((s) => s.humanize);
+  const toggleHumanize = useStore((s) => s.toggleHumanize);
   const status = useStore((s) => s.status);
   const clicks = useStore((s) => s.clicks);
   const elapsedMs = useStore((s) => s.elapsedMs);
-  const target = useStore((s) => s.target);
+  const lastError = useStore((s) => s.lastError);
   const applyTick = useStore((s) => s.applyTick);
-  const startStopHotkey = useStore((s) => s.startStopHotkey);
-  const setStartStopHotkey = useStore((s) => s.setStartStopHotkey);
+  // The popover only ever drives the clicker workspace, so it shows the clicker
+  // slot of the per-workspace hotkey map.
+  const clickerHotkey = useStore((s) => s.hotkeys.clicker);
+  const hotkeys = useStore((s) => s.hotkeys);
+  const setHotkey = useStore((s) => s.setHotkey);
+  const lastRun = useStore((s) => s.runLog[0]);
+
+  const [picking, setPicking] = useState(false);
 
   const intervalMs = Math.max(1, cadenceToMs(cadence));
 
@@ -38,22 +55,32 @@ export function PopoverApp() {
 
   useEffect(() => {
     const offTick = window.clik.onTick((t) => applyTick(t));
-    const offHotkey = window.clik.onHotkey((n) => {
-      if (n === 'fire') fire();
-      if (n === 'cancel') cancel();
+    // The popover cares about the clicker slot only — sequence / autonomy fire
+    // events would have no config to start from here. The main process stops
+    // runners itself, so we never see a 'cancel' action.
+    const offHotkey = window.clik.onHotkey(({ target, action }) => {
+      if (action !== 'fire') return;
+      if (target === 'clicker') fire();
     });
     const offStatus = window.clik.onHotkeyStatus((reg) => {
-      if (reg.ok && reg.accelerator && reg.accelerator !== useStore.getState().startStopHotkey) {
-        setStartStopHotkey(reg.accelerator);
+      if (!reg.ok) return;
+      const persisted = useStore.getState().hotkeys[reg.target];
+      if (reg.accelerator && reg.accelerator !== persisted) {
+        setHotkey(reg.target, reg.accelerator);
       }
     });
     return () => { offTick(); offHotkey(); offStatus(); };
-  }, [applyTick, fire, cancel, setStartStopHotkey]);
+  }, [applyTick, fire, setHotkey]);
 
-  // Ensure the main process registration mirrors the persisted value on popover open.
+  // Re-register every slot with main on popover open. The popover and main
+  // window share the same store, so registering here is idempotent.
   useEffect(() => {
-    window.clik.setStartStopHotkey(startStopHotkey).catch(() => undefined);
-  }, [startStopHotkey]);
+    (Object.entries(hotkeys) as Array<['clicker' | 'sequence' | 'autonomy', string]>).forEach(
+      ([target, accel]) => {
+        window.clik.setHotkey(target, accel).catch(() => undefined);
+      },
+    );
+  }, [hotkeys]);
 
   useEffect(() => {
     if (status !== 'running') return;
@@ -83,11 +110,24 @@ export function PopoverApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, [status, fire, cancel]);
 
+  const handlePick = useCallback(async () => {
+    if (picking) return;
+    setPicking(true);
+    try {
+      // Hide popover during the pick so it doesn't swallow the click.
+      await window.clik.hidePopover();
+      const res = await window.clik.startPicker();
+      if (res.ok) setTarget({ kind: 'fixed', x: res.x, y: res.y });
+    } finally {
+      setPicking(false);
+    }
+  }, [picking, setTarget]);
+
   const running = status === 'running';
 
   return (
     <div
-      className="flex flex-col h-screen w-screen select-none"
+      className="flex flex-col h-screen w-screen select-none overflow-hidden"
       style={{
         background: 'var(--color-ink)',
         border: '1px solid var(--color-line)',
@@ -98,9 +138,16 @@ export function PopoverApp() {
         <div className="flex items-center gap-2">
           <span
             className="inline-block w-[7px] h-[7px]"
-            style={{ background: running ? 'var(--color-accent)' : 'var(--color-cream-dim)' }}
+            style={{
+              background:
+                status === 'error'
+                  ? 'var(--color-danger)'
+                  : running
+                    ? 'var(--color-accent)'
+                    : 'var(--color-cream-dim)',
+            }}
           />
-          <span className="label">{running ? 'Running' : 'Idle'}</span>
+          <span className="label">{running ? 'Running' : status === 'error' ? 'Error' : 'Idle'}</span>
         </div>
         <button
           type="button"
@@ -120,6 +167,7 @@ export function PopoverApp() {
               min={1}
               max={60 * 60 * 1000}
               step={10}
+              size="sm"
               onChange={(ms) => {
                 const sec = Math.floor(ms / 1000);
                 const millis = ms - sec * 1000;
@@ -129,23 +177,130 @@ export function PopoverApp() {
             <span className="label-muted">ms</span>
           </div>
           <div className="text-right">
-            <div className="font-display text-[22px] leading-none">{formatCps(intervalMs)}</div>
+            <div className="font-display text-[20px] leading-none">{formatCps(intervalMs)}</div>
             <div className="label-muted">cps</div>
           </div>
         </div>
       </section>
 
-      <section className="px-4 pb-3">
-        <div className="label-muted mb-1">Button</div>
-        <Segment<MouseButton>
-          value={button}
-          onChange={setButton}
+      <section className="px-4 pb-2">
+        <div className="label-muted mb-1">Mouse</div>
+        <div className="flex flex-col gap-2">
+          <Segment<MouseButton>
+            value={button}
+            onChange={setButton}
+            options={[
+              { value: 'left', label: 'Left' },
+              { value: 'right', label: 'Right' },
+              { value: 'middle', label: 'Middle' },
+            ]}
+          />
+          <Segment<ClickKind>
+            value={kind}
+            onChange={setKind}
+            options={[
+              { value: 'single', label: 'Single' },
+              { value: 'double', label: 'Double' },
+              { value: 'hold', label: 'Hold' },
+            ]}
+          />
+        </div>
+      </section>
+
+      <section className="px-4 pb-2">
+        <div className="flex items-center justify-between mb-1">
+          <span className="label-muted">Target</span>
+          <button
+            type="button"
+            className="label-muted hover:text-[var(--color-cream)] disabled:opacity-50"
+            onClick={handlePick}
+            disabled={picking}
+            title="Pick a point on screen"
+          >
+            {picking ? 'Picking…' : 'Pick ↗'}
+          </button>
+        </div>
+        <Segment<TargetKind>
+          value={target.kind}
+          onChange={(next) => {
+            if (next === 'cursor') setTarget({ kind: 'cursor' });
+            else if (next === 'fixed')
+              setTarget({
+                kind: 'fixed',
+                x: target.kind === 'fixed' ? target.x : 200,
+                y: target.kind === 'fixed' ? target.y : 200,
+              });
+          }}
           options={[
-            { value: 'left', label: 'Left' },
-            { value: 'right', label: 'Right' },
-            { value: 'middle', label: 'Middle' },
+            { value: 'cursor', label: 'Cursor' },
+            { value: 'fixed', label: 'Fixed' },
+            { value: 'sequence', label: `Seq${target.kind === 'sequence' ? ` (${target.points.length})` : ''}`, disabled: target.kind !== 'sequence' },
           ]}
         />
+        <div className="mt-1 label-muted text-[var(--color-cream-dim)] truncate">
+          {target.kind === 'cursor' && 'Follows cursor'}
+          {target.kind === 'fixed' && `${target.x}, ${target.y}`}
+          {target.kind === 'sequence' && `${target.points.length} points · configured in full app`}
+        </div>
+      </section>
+
+      <section className="px-4 pb-2">
+        <div className="label-muted mb-1">Stop</div>
+        <Segment<StopKind>
+          value={stop.kind}
+          onChange={(next) => {
+            if (next === 'off') setStop({ kind: 'off' });
+            else if (next === 'after-clicks')
+              setStop({ kind: 'after-clicks', count: stop.kind === 'after-clicks' ? stop.count : 100 });
+            else if (next === 'after-duration')
+              setStop({ kind: 'after-duration', ms: stop.kind === 'after-duration' ? stop.ms : 60_000 });
+          }}
+          options={[
+            { value: 'off', label: 'Manual' },
+            { value: 'after-clicks', label: 'Clicks' },
+            { value: 'after-duration', label: 'Time' },
+          ]}
+        />
+        {stop.kind === 'after-clicks' && (
+          <div className="mt-2 flex items-center gap-3">
+            <span className="label-muted">After</span>
+            <Stepper
+              value={stop.count}
+              onChange={(count) => setStop({ kind: 'after-clicks', count })}
+              min={1}
+              max={1_000_000}
+              step={10}
+              size="sm"
+            />
+            <span className="label-muted">clicks</span>
+          </div>
+        )}
+        {stop.kind === 'after-duration' && (
+          <div className="mt-2 flex items-center gap-3">
+            <span className="label-muted">After</span>
+            <Stepper
+              value={Math.round(stop.ms / 1000)}
+              onChange={(sec) => setStop({ kind: 'after-duration', ms: sec * 1000 })}
+              min={1}
+              max={60 * 60 * 24}
+              step={5}
+              size="sm"
+            />
+            <span className="label-muted">sec</span>
+          </div>
+        )}
+      </section>
+
+      <section className="px-4 pb-3">
+        <button
+          type="button"
+          className="w-full flex items-center justify-between"
+          onClick={toggleHumanize}
+          title="Add small random jitter to timing and position"
+        >
+          <span className="label-muted">Humanize</span>
+          <span className="switch" data-on={humanize ? 'true' : 'false'} />
+        </button>
       </section>
 
       <section className="px-4 pb-3">
@@ -163,19 +318,31 @@ export function PopoverApp() {
         </button>
       </section>
 
-      <footer className="mt-auto px-4 py-3 border-t border-[var(--color-line)] grid grid-cols-3 gap-3">
-        <Stat label="Clicks" value={clicks.toLocaleString('en-US')} />
-        <Stat label="Elapsed" value={formatElapsed(elapsedMs)} />
-        <Stat
-          label="Hotkey"
-          value={formatAccelerator(startStopHotkey)}
-          title={startStopHotkey}
-        />
+      <footer className="mt-auto border-t border-[var(--color-line)]">
+        <div className="px-4 py-3 grid grid-cols-3 gap-3">
+          <Stat label="Clicks" value={clicks.toLocaleString('en-US')} />
+          <Stat label="Elapsed" value={formatElapsed(elapsedMs)} />
+          <Stat
+            label="Hotkey"
+            value={formatAccelerator(clickerHotkey)}
+            title={clickerHotkey}
+          />
+        </div>
+        {lastError && lastError !== 'hotkey-toggle' && (
+          <div
+            className="px-4 pb-3 label-muted"
+            style={{ color: 'var(--color-danger)' }}
+            title={lastError}
+          >
+            {describeError(lastError)}
+          </div>
+        )}
+        {!lastError && lastRun && !running && (
+          <div className="px-4 pb-3 label-muted text-[var(--color-cream-dim)] truncate" title={new Date(lastRun.endedAt).toLocaleString()}>
+            Last: {lastRun.clicks.toLocaleString('en-US')} clicks · {formatElapsed(lastRun.elapsedMs)} · {lastRun.outcome}
+          </div>
+        )}
       </footer>
-
-      {target.kind !== 'cursor' && (
-        <div className="absolute top-2 right-2 label-muted">target: {target.kind}</div>
-      )}
     </div>
   );
 }
@@ -193,4 +360,23 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
       </div>
     </div>
   );
+}
+
+function describeError(code: string): string {
+  switch (code) {
+    case 'grant-accessibility':
+      return 'Grant accessibility in System Settings';
+    case 'helper-failed':
+      return 'Helper failed to start';
+    case 'empty-sequence':
+      return 'Sequence has no points';
+    case 'kill-zone':
+      return 'Stopped: kill zone reached';
+    case 'not-ready':
+      return 'Clicker not ready';
+    case 'start-failed':
+      return 'Could not start clicker';
+    default:
+      return code;
+  }
 }
