@@ -20,13 +20,13 @@ X86_OUT="$ROOT/resources/.clik-helper.x86_64"
 
 echo "==> building clik-helper (arm64)"
 swiftc -O -target arm64-apple-macos12.0 \
-  -framework CoreGraphics -framework ApplicationServices \
+  -framework CoreGraphics -framework ApplicationServices -framework AppKit \
   "$HERE/helper.swift" -o "$ARM_OUT"
 
 if xcrun --sdk macosx --find swiftc >/dev/null 2>&1; then
   # Try x86_64 slice; if the toolchain does not support it just skip and ship arm64-only.
   if swiftc -O -target x86_64-apple-macos12.0 \
-       -framework CoreGraphics -framework ApplicationServices \
+       -framework CoreGraphics -framework ApplicationServices -framework AppKit \
        "$HERE/helper.swift" -o "$X86_OUT" 2>/dev/null; then
     echo "==> fusing universal binary"
     lipo -create "$ARM_OUT" "$X86_OUT" -output "$OUT"

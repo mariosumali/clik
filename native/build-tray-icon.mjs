@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Generates resources/trayTemplate.png (22x22) and trayTemplate@2x.png (44x44).
 // Template icons on macOS use black + alpha; the OS colours them to match the menubar.
+//
+// Glyph mirrors the sidebar logo: an outer square frame with a small top-left corner
+// bracket centred inside.
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { deflateSync } from 'node:zlib';
@@ -34,33 +37,50 @@ function chunk(type, data) {
   return Buffer.concat([len, t, data, crcBuf]);
 }
 
+// Glyph on a 22-pt grid:
+//   - outer frame: 1pt stroke inset 1pt from edges (so from (1,1) to (20,20))
+//   - inner bracket: 10x10 square centred, with only the top + left edges drawn at 2pt
+// Scaled up for @2x.
 function buildPng(size) {
-  const scale = size / 22; // base glyph designed on a 22pt grid
-  const cx = (size - 1) / 2;
-  const cy = (size - 1) / 2;
-  const ringR = 8 * scale;
-  const ringW = Math.max(1, 1 * scale);
-  const armStart = 3.2 * scale;
-  const armEnd = 7.2 * scale;
-  const armW = Math.max(1, 1 * scale);
-  const centerR = 1.1 * scale;
+  const s = size / 22;
+
+  const frameInset = 1 * s;           // empty padding outside the frame
+  const frameStroke = Math.max(1, Math.round(1 * s));
+  const innerSize = 10 * s;           // side length of the inner bracket's bounding box
+  const innerStroke = Math.max(1, Math.round(2 * s));
+
+  const frameMin = frameInset;
+  const frameMax = size - 1 - frameInset;
+
+  const innerMin = (size - innerSize) / 2;
+  const innerMax = innerMin + innerSize - 1;
 
   const rows = [];
   for (let y = 0; y < size; y++) {
     rows.push(0); // filter: None
     for (let x = 0; x < size; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      const r = Math.hypot(dx, dy);
       let alpha = 0;
-      // ring
-      if (Math.abs(r - ringR) <= ringW / 2) alpha = 255;
-      // center dot
-      if (r <= centerR) alpha = 255;
-      // crosshair arms (top/bottom/left/right), not extending into the ring
-      const ax = Math.abs(dx), ay = Math.abs(dy);
-      if (ax <= armW / 2 && ay >= armStart && ay <= armEnd) alpha = 255;
-      if (ay <= armW / 2 && ax >= armStart && ax <= armEnd) alpha = 255;
+
+      // Outer frame (1pt stroke).
+      const onLeftEdge = x >= frameMin && x < frameMin + frameStroke;
+      const onRightEdge = x <= frameMax && x > frameMax - frameStroke;
+      const onTopEdge = y >= frameMin && y < frameMin + frameStroke;
+      const onBottomEdge = y <= frameMax && y > frameMax - frameStroke;
+      const insideFrameH = x >= frameMin && x <= frameMax;
+      const insideFrameV = y >= frameMin && y <= frameMax;
+      if (((onLeftEdge || onRightEdge) && insideFrameV) || ((onTopEdge || onBottomEdge) && insideFrameH)) {
+        alpha = 255;
+      }
+
+      // Inner corner bracket (top + left edges, 2pt stroke).
+      const insideInnerH = x >= innerMin && x <= innerMax;
+      const insideInnerV = y >= innerMin && y <= innerMax;
+      const onInnerTop = y >= innerMin && y < innerMin + innerStroke;
+      const onInnerLeft = x >= innerMin && x < innerMin + innerStroke;
+      if ((onInnerTop && insideInnerH) || (onInnerLeft && insideInnerV)) {
+        alpha = 255;
+      }
+
       rows.push(0, 0, 0, alpha);
     }
   }
