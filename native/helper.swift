@@ -9,7 +9,8 @@
 //     trust:   {"id":N,"cmd":"trust"}              // Accessibility permission
 //     capture: {"id":N,"cmd":"capture","x":<pt>,"y":<pt>,"w":<pt>,"h":<pt>,"toClipboard":true?}
 //     sample:  {"id":N,"cmd":"sample","x":<pt>,"y":<pt>}
-//     match:   {"id":N,"cmd":"match","png":"<base64>","x":<pt>,"y":<pt>,"w":<pt>,"h":<pt>,"threshold":<0-1>}
+//     match:   {"id":N,"cmd":"match","png":"<base64>","x":<pt>,"y":<pt>,"w":<pt>,"h":<pt>,"minConfidence":<0-1>}
+//              (legacy: "threshold":<0-1> interpreted as minConfidence = 1 - threshold)
 //     scroll:  {"id":N,"cmd":"scroll","dx":<lines>,"dy":<lines>,"x":<pt>|null,"y":<pt>|null}
 //     keypress:{"id":N,"cmd":"keypress","key":"a","modifiers":["cmd","shift",...]}
 //     type:    {"id":N,"cmd":"type","text":"hello","perCharDelayMs":<int>}
@@ -24,6 +25,7 @@ import Foundation
 import CoreGraphics
 import ApplicationServices
 import AppKit
+import Vision
 
 // MARK: - Trust check
 
@@ -316,52 +318,185 @@ func decodePngBase64(_ b64: String) -> CGImage? {
     return CGImageSourceCreateImageAtIndex(src, 0, nil)
 }
 
-// MARK: - Template matching (grayscale SAD with early-abort)
+// MARK: - Template matching (grayscale ZNCC with coarse-to-fine pyramid)
 
-// Downscales both the search image and the template to a common coarse basis so
-// the O(sw*sh*tw*th) SAD loop stays tractable. Returns the match offset (tx, ty)
-// in the *coarse* search grid along with a normalised score in [0,1] (0 = perfect).
-func matchTemplate(search: CGImage, template: CGImage) -> (cx: Int, cy: Int, score: Double, coarseScale: Double)? {
-    // Cap the coarse search's longest edge at 240px; scale the template by the
-    // same ratio so aspect ratios are preserved.
-    let longest = max(search.width, search.height)
-    let coarseScale = longest > 240 ? (240.0 / Double(longest)) : 1.0
-    let sw = max(1, Int(Double(search.width) * coarseScale))
-    let sh = max(1, Int(Double(search.height) * coarseScale))
-    let tw = max(1, Int(Double(template.width) * coarseScale))
-    let th = max(1, Int(Double(template.height) * coarseScale))
+// Zero-mean Normalized Cross-Correlation, illumination- and contrast-invariant.
+// Returns (cx, cy) in full-resolution search-image pixel coordinates (top-left
+// corner of the best-match window) and a confidence in [0, 1] where 1.0 is a
+// perfect match and 0.0 is uncorrelated / anti-correlated.
+//
+// Strategy:
+//   1. Coarse pass: downsample both images so the search's longest edge is at
+//      most `coarseMax`, preserving the template's relative size. Run ZNCC over
+//      the full coarse search grid. This handles whole-display searches quickly
+//      without throwing away template detail (we keep the template's *shape*,
+//      not just its pixels).
+//   2. Fine pass: re-run ZNCC at full resolution inside a small window around
+//      the coarse winner. This recovers pixel-accurate coordinates and lets the
+//      full-size template discriminate against look-alikes the coarse pass
+//      accepted.
+//
+// If the search is already small enough, we just do the fine pass once.
+func matchTemplateZNCC(search: CGImage, template: CGImage) -> (cx: Double, cy: Double, confidence: Double)? {
+    let sWFull = search.width
+    let sHFull = search.height
+    let tWFull = template.width
+    let tHFull = template.height
 
+    guard tWFull >= 2, tHFull >= 2, tWFull <= sWFull, tHFull <= sHFull else { return nil }
+    guard let sFull = rasterToGray(search, width: sWFull, height: sHFull),
+          let tFull = rasterToGray(template, width: tWFull, height: tHFull) else { return nil }
+
+    let coarseMax = 320
+    let longest = max(sWFull, sHFull)
+
+    // Small enough to skip the pyramid entirely.
+    if longest <= coarseMax {
+        guard let hit = znccSlide(
+            search: sFull, sw: sWFull, sh: sHFull,
+            template: tFull, tw: tWFull, th: tHFull
+        ) else { return nil }
+        return (Double(hit.x), Double(hit.y), hit.confidence)
+    }
+
+    let coarseScale = Double(coarseMax) / Double(longest)
+    let sWc = max(1, Int(Double(sWFull) * coarseScale))
+    let sHc = max(1, Int(Double(sHFull) * coarseScale))
+    let tWc = max(2, Int((Double(tWFull) * coarseScale).rounded()))
+    let tHc = max(2, Int((Double(tHFull) * coarseScale).rounded()))
+
+    // Coarse template got too tiny to carry signal — fall back to full-res.
+    // Rare: only happens when the template is a sliver on a huge search.
+    guard tWc <= sWc, tHc <= sHc else {
+        guard let hit = znccSlide(
+            search: sFull, sw: sWFull, sh: sHFull,
+            template: tFull, tw: tWFull, th: tHFull
+        ) else { return nil }
+        return (Double(hit.x), Double(hit.y), hit.confidence)
+    }
+
+    guard let sCoarse = rasterToGray(search, width: sWc, height: sHc),
+          let tCoarse = rasterToGray(template, width: tWc, height: tHc) else { return nil }
+    guard let coarseHit = znccSlide(
+        search: sCoarse, sw: sWc, sh: sHc,
+        template: tCoarse, tw: tWc, th: tHc
+    ) else { return nil }
+
+    // Map coarse top-left back to full-resolution space, then widen the crop by
+    // enough margin to absorb the coarse grid's ±1-cell uncertainty.
+    let fxApprox = Double(coarseHit.x) / coarseScale
+    let fyApprox = Double(coarseHit.y) / coarseScale
+    let marginX = max(4, Int((1.0 / coarseScale).rounded(.up)) + 2)
+    let marginY = max(4, Int((1.0 / coarseScale).rounded(.up)) + 2)
+
+    let cropX0 = max(0, Int(fxApprox.rounded()) - marginX)
+    let cropY0 = max(0, Int(fyApprox.rounded()) - marginY)
+    let cropX1 = min(sWFull, Int(fxApprox.rounded()) + tWFull + marginX)
+    let cropY1 = min(sHFull, Int(fyApprox.rounded()) + tHFull + marginY)
+    let cropW = cropX1 - cropX0
+    let cropH = cropY1 - cropY0
+
+    // If the crop can't contain the template (shouldn't happen, guard anyway),
+    // just trust the coarse answer scaled back up.
+    if cropW < tWFull || cropH < tHFull {
+        return (fxApprox, fyApprox, coarseHit.confidence)
+    }
+
+    // Extract the crop by copying rows out of sFull.
+    var crop = [UInt8](repeating: 0, count: cropW * cropH)
+    sFull.withUnsafeBufferPointer { sp in
+        crop.withUnsafeMutableBufferPointer { cp in
+            let sBase = sp.baseAddress!
+            let cBase = cp.baseAddress!
+            for row in 0..<cropH {
+                let srcOffset = (cropY0 + row) * sWFull + cropX0
+                let dstOffset = row * cropW
+                memcpy(cBase + dstOffset, sBase + srcOffset, cropW)
+            }
+        }
+    }
+
+    guard let fineHit = znccSlide(
+        search: crop, sw: cropW, sh: cropH,
+        template: tFull, tw: tWFull, th: tHFull
+    ) else {
+        return (fxApprox, fyApprox, coarseHit.confidence)
+    }
+
+    // Keep whichever pass has higher confidence. The fine pass usually wins,
+    // but if the coarse winner was a false peak far from our crop we prefer
+    // the coarse number to avoid over-trusting a local maximum.
+    let fineCx = Double(cropX0 + fineHit.x)
+    let fineCy = Double(cropY0 + fineHit.y)
+    let confidence = max(coarseHit.confidence, fineHit.confidence)
+    return (fineCx, fineCy, confidence)
+}
+
+// Slide the template over the search image and return the top-left pixel
+// coordinate of the best match plus its confidence in [0, 1].
+private func znccSlide(
+    search: [UInt8], sw: Int, sh: Int,
+    template: [UInt8], tw: Int, th: Int
+) -> (x: Int, y: Int, confidence: Double)? {
     guard tw >= 2, th >= 2, tw <= sw, th <= sh else { return nil }
-    guard let s = rasterToGray(search, width: sw, height: sh),
-          let t = rasterToGray(template, width: tw, height: th) else { return nil }
+
+    // Template mean and zero-mean deviation, computed once.
+    let tArea = tw * th
+    var tSum: Int = 0
+    for v in template { tSum += Int(v) }
+    let tMean = Double(tSum) / Double(tArea)
+
+    var tDev = [Double](repeating: 0, count: tArea)
+    var tNormSq: Double = 0
+    for i in 0..<tArea {
+        let d = Double(template[i]) - tMean
+        tDev[i] = d
+        tNormSq += d * d
+    }
+    // Completely flat template (solid color): correlation is undefined. Treat
+    // as no-op and reject — a flat template can't discriminate anyway.
+    guard tNormSq > 1e-6 else { return nil }
+    let tNorm = tNormSq.squareRoot()
 
     let maxX = sw - tw
     let maxY = sh - th
-    var bestSum: UInt64 = .max
+    var bestScore = -Double.infinity
     var bestX = 0
     var bestY = 0
 
-    s.withUnsafeBufferPointer { sp in
-        t.withUnsafeBufferPointer { tp in
+    search.withUnsafeBufferPointer { sp in
+        tDev.withUnsafeBufferPointer { tp in
             let sBase = sp.baseAddress!
             let tBase = tp.baseAddress!
             for y in 0...maxY {
                 for x in 0...maxX {
-                    var sum: UInt64 = 0
-                    var abort = false
+                    // wSum / wSumSq: running sum & sum-of-squares over the window.
+                    var wSum: Int = 0
+                    var wSumSq: Int = 0
+                    var numer: Double = 0
                     for ty in 0..<th {
                         let srcRow = sBase + ((y + ty) * sw + x)
                         let tplRow = tBase + (ty * tw)
-                        var rowSum: UInt64 = 0
                         for tx in 0..<tw {
-                            let d = Int(srcRow[tx]) - Int(tplRow[tx])
-                            rowSum += UInt64(d < 0 ? -d : d)
+                            let sv = Int(srcRow[tx])
+                            wSum += sv
+                            wSumSq += sv * sv
+                            numer += Double(sv) * tplRow[tx]
                         }
-                        sum &+= rowSum
-                        if sum >= bestSum { abort = true; break }
                     }
-                    if !abort && sum < bestSum {
-                        bestSum = sum
+                    // sum((w - wMean) * tDev) = sum(w * tDev) - wMean * sum(tDev)
+                    //                         = sum(w * tDev)       [since sum(tDev) == 0]
+                    // sum((w - wMean)^2)      = sum(w^2) - wSum^2 / tArea
+                    let wMean = Double(wSum) / Double(tArea)
+                    let wVarSum = Double(wSumSq) - Double(wSum) * wMean
+                    if wVarSum <= 1e-6 {
+                        // Flat window: correlation undefined. Skip.
+                        continue
+                    }
+                    let denom = wVarSum.squareRoot() * tNorm
+                    let ncc = numer / denom
+                    if ncc > bestScore {
+                        bestScore = ncc
                         bestX = x
                         bestY = y
                     }
@@ -370,9 +505,11 @@ func matchTemplate(search: CGImage, template: CGImage) -> (cx: Int, cy: Int, sco
         }
     }
 
-    if bestSum == .max { return nil }
-    let norm = Double(bestSum) / Double(tw * th * 255)
-    return (bestX, bestY, norm, coarseScale)
+    if bestScore == -Double.infinity { return nil }
+    // Clamp anti-correlated results to 0 so consumers can treat the return
+    // value as a straight "how confident are we" probability.
+    let confidence = max(0.0, min(1.0, bestScore))
+    return (bestX, bestY, confidence)
 }
 
 // MARK: - Keyboard + scroll + drag
@@ -565,6 +702,115 @@ func copyImageToClipboard(_ image: CGImage) -> Bool {
     return pb.setData(data, forType: .png)
 }
 
+// MARK: - OCR (Vision)
+
+// Recognize text inside `pointsRect` using macOS Vision. `accurate=true` uses
+// the slower revision with better CJK / handwriting support. Returns the
+// joined text plus the average per-line confidence in [0, 1].
+func recognizeText(pointsRect: CGRect, accurate: Bool, lang: String?) -> (text: String, confidence: Double, err: String?) {
+    guard let img = captureRect(pointsRect: pointsRect) else {
+        return ("", 0.0, "capture-failed")
+    }
+
+    var resultText = ""
+    var avgConf = 0.0
+    var errOut: String? = nil
+
+    let request = VNRecognizeTextRequest { req, err in
+        if let err = err { errOut = String(describing: err); return }
+        guard let observations = req.results as? [VNRecognizedTextObservation] else { return }
+        var lines: [String] = []
+        var confSum: Double = 0
+        var confCount: Int = 0
+        for obs in observations {
+            guard let top = obs.topCandidates(1).first else { continue }
+            lines.append(top.string)
+            confSum += Double(top.confidence)
+            confCount += 1
+        }
+        resultText = lines.joined(separator: "\n")
+        avgConf = confCount > 0 ? confSum / Double(confCount) : 0
+    }
+    request.recognitionLevel = accurate ? .accurate : .fast
+    request.usesLanguageCorrection = accurate
+    if let l = lang, !l.isEmpty {
+        request.recognitionLanguages = [l]
+    }
+
+    let handler = VNImageRequestHandler(cgImage: img, options: [:])
+    do {
+        try handler.perform([request])
+    } catch {
+        return ("", 0.0, "vision-failed")
+    }
+    return (resultText, avgConf, errOut)
+}
+
+// MARK: - App activation
+
+// Activate the frontmost window of an app by bundle id OR localized name.
+// Returns one of:
+//   1 — was running and got activated
+//   0 — not running (and launch not requested or failed)
+//  -1 — internal failure
+func activateApp(identifier: String, launchIfMissing: Bool) -> Int {
+    let apps = NSWorkspace.shared.runningApplications
+    for app in apps {
+        let bundle = app.bundleIdentifier ?? ""
+        let name = app.localizedName ?? ""
+        if bundle == identifier || name.caseInsensitiveCompare(identifier) == .orderedSame {
+            let ok = app.activate(options: [.activateAllWindows])
+            return ok ? 1 : -1
+        }
+    }
+    if launchIfMissing {
+        // Try bundle id first, then name.
+        if identifier.contains(".") {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+                do {
+                    _ = try NSWorkspace.shared.launchApplication(at: url, options: [], configuration: [:])
+                    return 0
+                } catch { return -1 }
+            }
+        }
+        let ok = NSWorkspace.shared.launchApplication(identifier)
+        return ok ? 0 : -1
+    }
+    return 0
+}
+
+func listRunningApps() -> [[String: Any]] {
+    let apps = NSWorkspace.shared.runningApplications
+    var out: [[String: Any]] = []
+    for app in apps {
+        // Filter out background-only helpers so the list is useful for a UI.
+        if app.activationPolicy != .regular { continue }
+        out.append([
+            "bundleId": app.bundleIdentifier ?? "",
+            "name": app.localizedName ?? "",
+            "pid": Int(app.processIdentifier),
+            "active": app.isActive,
+        ])
+    }
+    return out
+}
+
+// MARK: - Idle detection
+
+// Seconds since the last user input event (mouse or keyboard) seen by the HID
+// subsystem. Works without Accessibility permission.
+func idleSeconds() -> Double {
+    let mouse = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .mouseMoved)
+    let left = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown)
+    let right = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown)
+    let other = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .otherMouseDown)
+    let key = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
+    let scroll = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .scrollWheel)
+    // The smallest value means "most recent activity" — that's how long it's
+    // been since *any* input.
+    return min(mouse, min(left, min(right, min(other, min(key, scroll)))))
+}
+
 // MARK: - IO
 
 func writeLine(_ obj: [String: Any]) {
@@ -734,6 +980,48 @@ while let line = readLine(strippingNewline: true) {
         continue
     }
 
+    if cmd == "idle" {
+        writeLine(["id": id, "ok": true, "seconds": idleSeconds()])
+        continue
+    }
+
+    if cmd == "focus-app" {
+        let ident = (root["app"] as? String) ?? ""
+        if ident.isEmpty {
+            writeLine(["id": id, "ok": false, "err": "bad-app"]); continue
+        }
+        let launch = (root["launchIfMissing"] as? Bool) ?? false
+        let code = activateApp(identifier: ident, launchIfMissing: launch)
+        writeLine(["id": id, "ok": code >= 0, "code": code])
+        continue
+    }
+
+    if cmd == "list-apps" {
+        writeLine(["id": id, "ok": true, "apps": listRunningApps()])
+        continue
+    }
+
+    if cmd == "ocr" {
+        guard let x = root["x"] as? Double, let y = root["y"] as? Double,
+              let w = root["w"] as? Double, let h = root["h"] as? Double,
+              w > 0, h > 0 else {
+            writeLine(["id": id, "ok": false, "err": "bad-rect"]); continue
+        }
+        let accurate = (root["accurate"] as? Bool) ?? false
+        let lang = root["lang"] as? String
+        let res = recognizeText(
+            pointsRect: CGRect(x: x, y: y, width: w, height: h),
+            accurate: accurate,
+            lang: lang
+        )
+        if let e = res.err {
+            writeLine(["id": id, "ok": false, "err": e])
+        } else {
+            writeLine(["id": id, "ok": true, "text": res.text, "confidence": res.confidence])
+        }
+        continue
+    }
+
     if cmd == "match" {
         guard let b64 = root["png"] as? String,
               let x = root["x"] as? Double, let y = root["y"] as? Double,
@@ -741,34 +1029,50 @@ while let line = readLine(strippingNewline: true) {
               w > 0, h > 0 else {
             writeLine(["id": id, "ok": false, "err": "bad-args"]); continue
         }
-        let threshold = (root["threshold"] as? Double) ?? 0.25
+        // Prefer minConfidence; fall back to legacy threshold (SAD-style, lower
+        // = better) by flipping to the confidence convention.
+        let minConfidence: Double
+        if let c = root["minConfidence"] as? Double {
+            minConfidence = max(0.0, min(1.0, c))
+        } else if let t = root["threshold"] as? Double {
+            minConfidence = max(0.0, min(1.0, 1.0 - t))
+        } else {
+            minConfidence = 0.85
+        }
         guard let tpl = decodePngBase64(b64) else {
             writeLine(["id": id, "ok": false, "err": "bad-template"]); continue
         }
         guard let search = captureRect(pointsRect: CGRect(x: x, y: y, width: w, height: h)) else {
             writeLine(["id": id, "ok": false, "err": "capture-failed"]); continue
         }
-        guard let m = matchTemplate(search: search, template: tpl) else {
-            writeLine(["id": id, "ok": true, "found": false, "score": 1.0]); continue
+        guard let m = matchTemplateZNCC(search: search, template: tpl) else {
+            // Template didn't fit or was flat: report as not-found with zero
+            // confidence rather than an error so polling nodes keep running.
+            writeLine([
+                "id": id, "ok": true, "found": false,
+                "confidence": 0.0, "score": 1.0,
+            ])
+            continue
         }
-        // Centre of the template in screen points. Coarse-grid position / coarseScale
-        // reconstructs the full-resolution pixel offset; then divide by the display
-        // scale (searchPxW / w) to convert to points.
-        let coarseScale = m.coarseScale
-        let fullOffsetPxX = Double(m.cx) / coarseScale
-        let fullOffsetPxY = Double(m.cy) / coarseScale
+        // Centre of the template in screen points. matchTemplateZNCC returns
+        // top-left pixel coordinates in the full-resolution search buffer; add
+        // half the template dimensions then divide by the display scale
+        // (searchPxW / w) to convert pixels back to points.
         let fullTplPxW = Double(tpl.width)
         let fullTplPxH = Double(tpl.height)
         let dispScale = w > 0 ? Double(search.width) / w : 1.0
-        let centerPointX = x + (fullOffsetPxX + fullTplPxW / 2.0) / dispScale
-        let centerPointY = y + (fullOffsetPxY + fullTplPxH / 2.0) / dispScale
-        let found = m.score <= threshold
+        let centerPointX = x + (m.cx + fullTplPxW / 2.0) / dispScale
+        let centerPointY = y + (m.cy + fullTplPxH / 2.0) / dispScale
+        let found = m.confidence >= minConfidence
+        // Keep `score` in the payload for back-compat (old clients read it as
+        // "lower = better"). `confidence` is the new canonical field.
         writeLine([
             "id": id, "ok": true,
             "found": found,
             "cx": centerPointX,
             "cy": centerPointY,
-            "score": m.score,
+            "confidence": m.confidence,
+            "score": 1.0 - m.confidence,
         ])
         continue
     }
