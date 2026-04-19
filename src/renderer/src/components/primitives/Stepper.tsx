@@ -7,8 +7,10 @@ interface StepperProps {
   max?: number;
   step?: number;
   pad?: number;
+  decimals?: number;
   className?: string;
   disabled?: boolean;
+  size?: 'md' | 'sm';
 }
 
 export function Stepper({
@@ -18,24 +20,32 @@ export function Stepper({
   max = Number.MAX_SAFE_INTEGER,
   step = 1,
   pad,
+  decimals = 0,
   className,
   disabled,
+  size = 'md',
 }: StepperProps) {
   const [draft, setDraft] = useState<string | null>(null);
 
-  const clamp = (n: number) => Math.max(min, Math.min(max, Math.floor(n)));
+  const round = (n: number) => {
+    if (decimals <= 0) return Math.floor(n);
+    const f = 10 ** decimals;
+    return Math.round(n * f) / f;
+  };
+  const clamp = (n: number) => Math.max(min, Math.min(max, round(n)));
 
-  const display = draft ?? (pad ? value.toString().padStart(pad, '0') : value.toString());
+  const format = (n: number) => (decimals > 0 ? n.toFixed(decimals) : n.toString());
+  const display = draft ?? (pad ? format(value).padStart(pad, '0') : format(value));
 
   const commit = (raw: string) => {
-    const n = Number.parseInt(raw, 10);
+    const n = decimals > 0 ? Number.parseFloat(raw) : Number.parseInt(raw, 10);
     if (Number.isFinite(n)) onChange(clamp(n));
     else onChange(clamp(value));
     setDraft(null);
   };
 
   return (
-    <div className={`stepper ${className ?? ''}`}>
+    <div className={`stepper ${size === 'sm' ? 'stepper--sm' : ''} ${className ?? ''}`}>
       <button
         type="button"
         aria-label="decrement"
@@ -50,7 +60,8 @@ export function Stepper({
         value={display}
         disabled={disabled}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
-          const v = e.target.value.replace(/[^\d-]/g, '');
+          const allowed = decimals > 0 ? /[^\d.-]/g : /[^\d-]/g;
+          const v = e.target.value.replace(allowed, '');
           setDraft(v);
         }}
         onBlur={(e) => commit(e.target.value)}
