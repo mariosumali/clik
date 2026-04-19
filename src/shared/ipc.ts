@@ -10,6 +10,7 @@ export const IPC = {
   appHideMain: 'app:hide-main',
   appHidePopover: 'app:hide-popover',
   appMode: 'app:mode',
+  mainResizeByDelta: 'main:resize-by-delta',
   pickerStart: 'picker:start',
   pickerPick: 'picker:pick',
   pickerCancel: 'picker:cancel',

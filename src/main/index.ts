@@ -72,6 +72,8 @@ const prefs = {
 };
 let powerBlockerId: number | null = null;
 let clickerRunning = false;
+let autonomyRunning = false;
+let trayFlashTimer: ReturnType<typeof setInterval> | null = null;
 
 // Expand the renderer's raw kill-zone payload into a flat list of screen-point
 // rectangles. Presets ('corners', 'edges') are walked per display so a 24px
@@ -429,6 +431,74 @@ function createTray(): void {
   });
 }
 
+// Braille cells share one fixed advance width in the menu bar, so animating
+// between blank (U+2800) and full (U+28FF) reads as a dot fading in/out without
+// collapsing the title area — unlike toggling to an empty string, which shifts
+// the whole status strip.
+const TRAY_PULSE_STEP_MS = 90;
+const TRAY_PULSE_PHASES: readonly string[] = [
+  '\u2800',
+  '\u2840',
+  '\u28C0',
+  '\u28E0',
+  '\u28F0',
+  '\u28F8',
+  '\u28FC',
+  '\u28FE',
+  '\u28FF',
+  '\u28FE',
+  '\u28FC',
+  '\u28F8',
+  '\u28F0',
+  '\u28E0',
+  '\u28C0',
+  '\u2840',
+];
+let trayPulsePhase = 0;
+
+function stopTrayFlash(): void {
+  if (trayFlashTimer !== null) {
+    clearInterval(trayFlashTimer);
+    trayFlashTimer = null;
+  }
+  trayPulsePhase = 0;
+  tray?.setTitle('');
+}
+
+// While a runner is active, reserve a fixed-width title (` + one Braille cell)
+// and step through phases so the dot appears to fade without changing layout.
+function startTrayFlash(): void {
+  if (!tray || trayFlashTimer !== null) return;
+  trayPulsePhase = 0;
+  const tick = (): void => {
+    if (!tray) return;
+    const ch = TRAY_PULSE_PHASES[trayPulsePhase % TRAY_PULSE_PHASES.length]!;
+    tray.setTitle(` ${ch}`, { fontType: 'monospacedDigit' });
+    trayPulsePhase += 1;
+  };
+  tick();
+  trayFlashTimer = setInterval(tick, TRAY_PULSE_STEP_MS);
+}
+
+function updateTrayRunningState(): void {
+  if (!tray) return;
+  const running = clickerRunning || autonomyRunning;
+  if (running) {
+    startTrayFlash();
+    const both = clickerRunning && autonomyRunning;
+    tray.setToolTip(
+      both
+        ? 'CLIK — clicker & autonomy running'
+        : autonomyRunning
+          ? 'CLIK — autonomy running'
+          : 'CLIK — running',
+    );
+  } else {
+    stopTrayFlash();
+    tray.setToolTip('CLIK — autoclicker');
+  }
+}
+
 function broadcastHotkeyStatus(reg: HotkeyRegistration): void {
   mainWindow?.webContents.send(IPC.hotkeyStatus, reg);
   popoverWindow?.webContents.send(IPC.hotkeyStatus, reg);
@@ -570,6 +640,38 @@ function wireIpc(): void {
 
   ipcMain.handle(IPC.appHidePopover, () => {
     popoverWindow?.hide();
+    return { ok: true };
+  });
+
+  // Grow/shrink the main window horizontally by `deltaWidth` points. Keeps the
+  // left edge pinned so expanding the tester column "extends to the right"
+  // instead of compressing existing content; if the new right edge would spill
+  // off the active display, the window is shifted left to stay on-screen.
+  ipcMain.handle(IPC.mainResizeByDelta, (_e, deltaWidth: number): { ok: boolean } => {
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+    const delta = Math.round(Number(deltaWidth) || 0);
+    if (delta === 0) return { ok: true };
+
+    const bounds = mainWindow.getBounds();
+    const work = screen.getDisplayMatching(bounds).workArea;
+
+    // Pick a minimum width that accommodates the shrunk state so Electron's
+    // minimumSize doesn't clamp the resize. We temporarily drop minWidth when
+    // shrinking, then restore a sensible floor afterwards.
+    const SHRUNK_MIN_WIDTH = 724;
+    const EXPANDED_MIN_WIDTH = 1100;
+    if (delta < 0) mainWindow.setMinimumSize(SHRUNK_MIN_WIDTH, 700);
+
+    let newWidth = Math.max(SHRUNK_MIN_WIDTH, bounds.width + delta);
+    if (newWidth > work.width) newWidth = work.width;
+
+    let newX = bounds.x;
+    const workRight = work.x + work.width;
+    if (newX + newWidth > workRight) newX = Math.max(work.x, workRight - newWidth);
+
+    mainWindow.setBounds({ x: newX, y: bounds.y, width: newWidth, height: bounds.height }, true);
+
+    if (delta > 0) mainWindow.setMinimumSize(EXPANDED_MIN_WIDTH, 700);
     return { ok: true };
   });
 
@@ -742,12 +844,18 @@ app.whenReady().then(() => {
     if (nextRunning !== clickerRunning) {
       clickerRunning = nextRunning;
       updatePowerBlocker();
+      updateTrayRunningState();
     }
     broadcastTick(state);
   });
 
   autonomy = new AutonomyRunner(helper);
   autonomy.on('tick', (state) => {
+    const nextRunning = (state as { status?: string }).status === 'running';
+    if (nextRunning !== autonomyRunning) {
+      autonomyRunning = nextRunning;
+      updateTrayRunningState();
+    }
     broadcastAutonomyTick(state);
   });
 
@@ -777,6 +885,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   (app as unknown as { isQuitting?: boolean }).isQuitting = true;
   try { globalShortcut.unregisterAll(); } catch { /* ignore */ }
+  stopTrayFlash();
   if (powerBlockerId !== null) {
     try { powerSaveBlocker.stop(powerBlockerId); } catch { /* ignore */ }
     powerBlockerId = null;

@@ -55,6 +55,9 @@ const api = {
   hidePopover(): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke(IPC.appHidePopover);
   },
+  resizeMainByDelta(deltaWidth: number): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke(IPC.mainResizeByDelta, deltaWidth);
+  },
   startPicker(): Promise<PickerResult> {
     return ipcRenderer.invoke(IPC.pickerStart);
   },
