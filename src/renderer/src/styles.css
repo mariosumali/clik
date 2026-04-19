@@ -1,0 +1,256 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink: #0b0b0b;
+  --color-ink-2: #111111;
+  --color-ink-3: #161616;
+  --color-line: #2a2a2a;
+  --color-line-2: #3a3a36;
+  --color-cream: #efeadd;
+  --color-cream-dim: #bdb7a6;
+  --color-muted: #8a8a85;
+  --color-accent: #d8ff00;
+  --color-danger: #ff5a3c;
+
+  --font-display: 'Instrument Serif', 'Times New Roman', serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-ink);
+    color: var(--color-cream);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.4;
+    letter-spacing: 0.02em;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  input,
+  button {
+    font-family: inherit;
+  }
+
+  button {
+    cursor: default;
+  }
+
+  /* Hide default number spinners; we use custom steppers. */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+}
+
+@layer components {
+  .font-display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  .label {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-cream);
+  }
+  .label-muted {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+
+  .hairline {
+    border: 1px solid var(--color-line);
+  }
+
+  .card {
+    border: 1px solid var(--color-line);
+    background: var(--color-ink);
+  }
+
+  .card-inset {
+    border-top: 1px solid var(--color-line);
+  }
+
+  .segment {
+    display: inline-flex;
+    border: 1px solid var(--color-line);
+  }
+
+  .segment > button {
+    padding: 8px 14px;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-cream);
+    background: transparent;
+    border-right: 1px solid var(--color-line);
+  }
+  .segment > button:last-child {
+    border-right: none;
+  }
+  .segment > button[data-active='true'] {
+    background: var(--color-cream);
+    color: var(--color-ink);
+  }
+  .segment > button:disabled {
+    color: var(--color-muted);
+    cursor: not-allowed;
+  }
+
+  .stepper {
+    display: grid;
+    grid-template-columns: 32px 1fr 32px;
+    align-items: stretch;
+    border: 1px solid var(--color-line);
+    height: 38px;
+    min-width: 104px;
+  }
+  .stepper button {
+    background: transparent;
+    color: var(--color-cream);
+    font-size: 14px;
+    border-right: 1px solid var(--color-line);
+  }
+  .stepper button:last-child {
+    border-right: none;
+    border-left: 1px solid var(--color-line);
+  }
+  .stepper input {
+    background: transparent;
+    color: var(--color-cream);
+    text-align: center;
+    border: none;
+    font-size: 14px;
+    letter-spacing: 0.05em;
+    outline: none;
+    padding: 0;
+  }
+
+  .btn-ghost {
+    border: 1px solid var(--color-line);
+    padding: 8px 14px;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    background: transparent;
+    color: var(--color-cream);
+  }
+
+  .btn-ghost:hover {
+    background: var(--color-ink-2);
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 18px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-cream-dim);
+    cursor: default;
+    border-left: 2px solid transparent;
+  }
+  .nav-item[data-active='true'] {
+    background: var(--color-ink-2);
+    color: var(--color-cream);
+    border-left-color: var(--color-cream);
+  }
+  .nav-item:hover:not([data-active='true']) {
+    color: var(--color-cream);
+  }
+
+  .nav-glyph {
+    width: 7px;
+    height: 7px;
+    background: currentColor;
+  }
+
+  /* Halftone / stencil dot matrix base tile. */
+  .dot {
+    width: 100%;
+    aspect-ratio: 1;
+    background: var(--color-cream);
+    opacity: 0.85;
+  }
+
+  .dot.off {
+    opacity: 0.12;
+    background: var(--color-cream);
+  }
+
+  /* Titlebar drag region (first 12px of the main frame). */
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  /* Switch — minimal on/off toggle, inspired by the segmented controls. */
+  .switch {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    border: 1px solid var(--color-line);
+    background: var(--color-ink-2);
+    cursor: default;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--color-cream-dim);
+    transition: transform 120ms ease, background 120ms ease;
+  }
+  .switch[data-on='true'] {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .switch[data-on='true']::after {
+    transform: translateX(18px);
+    background: var(--color-ink);
+  }
+
+  /* Icon button — 28px square for sidebar/toolbar affordances. */
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-line);
+    background: transparent;
+    color: var(--color-cream-dim);
+  }
+  .icon-btn:hover {
+    color: var(--color-cream);
+    border-color: var(--color-cream-dim);
+  }
+}
