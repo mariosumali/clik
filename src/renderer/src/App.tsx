@@ -82,7 +82,7 @@ export function App() {
           });
           return;
         }
-        const res = await window.clik.autonomyStart(activeFlow);
+        const res = await window.clik.autonomyStart(activeFlow, state.autonomyFlows);
         if (!res.ok) {
           applyAutonomyTick({
             status: 'error',
@@ -272,6 +272,18 @@ export function App() {
   useEffect(() => {
     window.clik.setPreventSleep(preventSleep).catch(() => undefined);
   }, [preventSleep]);
+
+  // Mirror the autonomy flow library and triggers list to the main process so
+  // the scheduler can launch a flow on its own (triggers fire in main and
+  // need the flow data without the renderer being open).
+  const autonomyFlows = useStore((s) => s.autonomyFlows);
+  const triggers = useStore((s) => s.triggers);
+  useEffect(() => {
+    window.clik.setFlowLibrary?.(autonomyFlows);
+  }, [autonomyFlows]);
+  useEffect(() => {
+    window.clik.triggersSet?.(triggers).catch(() => undefined);
+  }, [triggers]);
 
   // Appearance: drive CSS variables + data-attributes from the persisted store
   // so the whole renderer picks up the user's chosen accent, density, and

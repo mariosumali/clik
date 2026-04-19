@@ -54,7 +54,7 @@ export function describeNode(node: AutonomyNode): string {
       return node.toClipboard ? 'Screenshot → clipboard' : 'Screenshot';
     case 'find':
       return node.template
-        ? `Find (≤ ${node.threshold.toFixed(2)})`
+        ? `Find (≥ ${node.minConfidence.toFixed(2)})`
         : 'Find · no template';
     case 'wait-until-found':
       return node.template
@@ -75,7 +75,14 @@ export function describeNode(node: AutonomyNode): string {
         case 'iteration':
           return `Every ${node.every ?? 1} iter`;
       }
+      return 'Branch';
     }
+    case 'read-text':
+      return `Read text → ${node.textVar}`;
+    case 'focus-app':
+      return `Focus ${ellipsize(node.appName || '?', 18)}`;
+    case 'call-flow':
+      return node.flowId ? `Call flow ${ellipsize(node.flowId, 14)}` : 'Call flow · none';
   }
 }
 
@@ -101,8 +108,8 @@ function describeSetVarSource(src: import('../../../../shared/autonomy').SetVarS
       return 'match.x';
     case 'last-found-y':
       return 'match.y';
-    case 'last-found-score':
-      return 'match.score';
+    case 'last-found-confidence':
+      return 'match.confidence';
     case 'elapsed-ms':
       return 'elapsedMs';
     case 'iterations':

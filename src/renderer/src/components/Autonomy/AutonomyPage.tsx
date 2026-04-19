@@ -185,7 +185,7 @@ export function AutonomyPage() {
       });
       return;
     }
-    const res = await window.clik.autonomyStart(activeFlow);
+    const res = await window.clik.autonomyStart(activeFlow, flows);
     if (!res.ok) {
       applyAutonomyTick({
         status: 'error',
@@ -518,7 +518,7 @@ interface RunBarProps {
   iterations: number;
   elapsedMs: number;
   lastError?: string;
-  lastFound: { x: number; y: number; score: number } | null;
+  lastFound: { x: number; y: number; confidence: number } | null;
   onRun: () => void;
   onStop: () => void;
 }
@@ -561,7 +561,7 @@ function RunBar({
           label="Last match"
           value={
             lastFound
-              ? `${lastFound.x}, ${lastFound.y} · ${lastFound.score.toFixed(2)}`
+              ? `${lastFound.x}, ${lastFound.y} · ${lastFound.confidence.toFixed(2)}`
               : '—'
           }
         />

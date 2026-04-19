@@ -356,7 +356,7 @@ function SetVarEditor({
           <option value="literal-string">Literal string</option>
           <option value="last-found-x">Last match X</option>
           <option value="last-found-y">Last match Y</option>
-          <option value="last-found-score">Last match score</option>
+          <option value="last-found-confidence">Last match confidence</option>
           <option value="elapsed-ms">Elapsed ms</option>
           <option value="iterations">Iterations</option>
           <option value="cursor-x">Cursor X</option>
@@ -1196,10 +1196,10 @@ function FindEditor({
     <TemplateSearchEditor
       template={node.template}
       searchRegion={node.searchRegion}
-      threshold={node.threshold}
+      minConfidence={node.minConfidence}
       onTemplate={(template) => onPatch({ template })}
       onRegion={(searchRegion) => onPatch({ searchRegion })}
-      onThreshold={(threshold) => onPatch({ threshold })}
+      onMinConfidence={(minConfidence) => onPatch({ minConfidence })}
       disabled={disabled}
     />
   );
@@ -1221,10 +1221,10 @@ function WaitUntilEditor({
       <TemplateSearchEditor
         template={node.template}
         searchRegion={node.searchRegion}
-        threshold={node.threshold}
+        minConfidence={node.minConfidence}
         onTemplate={(template) => onPatch({ template })}
         onRegion={(searchRegion) => onPatch({ searchRegion })}
-        onThreshold={(threshold) => onPatch({ threshold })}
+        onMinConfidence={(minConfidence) => onPatch({ minConfidence })}
         disabled={disabled}
       />
       <label className="flex items-center justify-between gap-4">
@@ -1260,22 +1260,29 @@ function WaitUntilEditor({
 function TemplateSearchEditor({
   template,
   searchRegion,
-  threshold,
+  minConfidence,
   onTemplate,
   onRegion,
-  onThreshold,
+  onMinConfidence,
   disabled,
 }: {
   template: AutonomyTemplate | null;
   searchRegion: AutonomyRect | null;
-  threshold: number;
+  minConfidence: number;
   onTemplate: (t: AutonomyTemplate | null) => void;
   onRegion: (r: AutonomyRect | null) => void;
-  onThreshold: (n: number) => void;
+  onMinConfidence: (n: number) => void;
   disabled: boolean;
 }) {
   const [capturing, setCapturing] = useState(false);
   const [pickingRegion, setPickingRegion] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<
+    | { kind: 'found'; x: number; y: number; confidence: number }
+    | { kind: 'miss'; confidence: number | null }
+    | { kind: 'error'; message: string }
+    | null
+  >(null);
 
   const captureTemplate = async () => {
     if (capturing || disabled) return;
@@ -1306,6 +1313,46 @@ function TemplateSearchEditor({
       if (region.ok && region.rect) onRegion(region.rect);
     } finally {
       setPickingRegion(false);
+    }
+  };
+
+  const runTestMatch = async () => {
+    if (testing || disabled || !template) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      // When no explicit region is configured we match against the whole
+      // primary display, mirroring the runtime default in `runFind`.
+      const rect: AutonomyRect = searchRegion ?? {
+        x: 0,
+        y: 0,
+        w: Math.max(1, window.screen?.width ?? 1920),
+        h: Math.max(1, window.screen?.height ?? 1080),
+      };
+      const res = await window.clik.autonomyMatch({
+        png: template.png,
+        rect,
+        minConfidence,
+      });
+      if (!res.ok) {
+        setTestResult({ kind: 'error', message: res.err ?? 'match failed' });
+      } else if (res.found && res.x !== undefined && res.y !== undefined) {
+        setTestResult({
+          kind: 'found',
+          x: res.x,
+          y: res.y,
+          confidence: res.confidence ?? 0,
+        });
+      } else {
+        setTestResult({ kind: 'miss', confidence: res.confidence ?? null });
+      }
+    } catch (err) {
+      setTestResult({
+        kind: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -1389,10 +1436,10 @@ function TemplateSearchEditor({
       </div>
 
       <label className="flex items-center justify-between gap-4">
-        <span className="label-muted">Threshold</span>
+        <span className="label-muted">Min confidence</span>
         <Stepper
-          value={threshold}
-          onChange={onThreshold}
+          value={minConfidence}
+          onChange={onMinConfidence}
           min={0}
           max={1}
           step={0.05}
@@ -1400,6 +1447,46 @@ function TemplateSearchEditor({
           disabled={disabled}
         />
       </label>
+      <div className="label-muted text-[11px]">
+        1.00 = pixel-perfect match required. 0.85 works for most UI widgets.
+        Drop toward 0.7 if the target has hover/focus states; raise toward 0.95
+        to avoid false positives on busy screens.
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={runTestMatch}
+          disabled={testing || disabled || !template}
+          title={!template ? 'Capture a template first' : 'Try matching right now'}
+        >
+          {testing ? 'Testing…' : 'Test match'}
+        </button>
+        {testResult && (
+          <div className="hairline p-2 font-mono text-[12px]">
+            {testResult.kind === 'found' && (
+              <span style={{ color: 'var(--color-cream)' }}>
+                ✓ hit @ {testResult.x}, {testResult.y} · confidence{' '}
+                {testResult.confidence.toFixed(3)}
+              </span>
+            )}
+            {testResult.kind === 'miss' && (
+              <span className="label-muted">
+                ✗ no match
+                {testResult.confidence !== null
+                  ? ` · best confidence ${testResult.confidence.toFixed(3)}`
+                  : ''}
+              </span>
+            )}
+            {testResult.kind === 'error' && (
+              <span style={{ color: 'var(--color-danger)' }}>
+                error: {testResult.message}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
     </>
   );
 }

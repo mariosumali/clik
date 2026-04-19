@@ -19,12 +19,14 @@ import type {
   AutonomyPort,
   AutonomyTick,
 } from '../../shared/autonomy.js';
+import type { PathRecording, Trigger } from '../../shared/triggers.js';
 import { type Cadence, cadenceToMs } from './lib/format.js';
 
 export type WorkspaceRoute =
   | 'clicker'
   | 'sequence'
   | 'autonomy'
+  | 'triggers'
   | 'run-log';
 export type Density = 'comfy' | 'compact';
 export type ThemeMode =
@@ -43,6 +45,13 @@ export interface SequencePoint {
   x: number;
   y: number;
   dwellMs: number;
+  // Per-point repeat count — fires the click at this point that many times
+  // before advancing. `undefined` and `1` both mean "fire once" (legacy
+  // behavior), so existing installs render unchanged.
+  repeat?: number;
+  // Multi-display hint: when set, (x, y) are LOCAL to the display's bounds.
+  // Without it they're global screen points (legacy default).
+  displayIndex?: number;
 }
 
 export type RunOutcome = 'completed' | 'stopped' | 'error';
@@ -77,6 +86,58 @@ export interface PanelState {
   target: boolean;
   stop: boolean;
 }
+
+// Tray popover is fully modular. Each section is a module with a stable id;
+// the user chooses which modules appear and in what order. Defaults below
+// match the historical popover layout so existing installs look identical
+// until the user opens the module manager.
+export type PopoverModuleId =
+  | 'status'
+  | 'interval'
+  | 'mouse'
+  | 'target'
+  | 'stop'
+  | 'humanize'
+  | 'theme'
+  | 'accent'
+  | 'hotkey'
+  | 'start'
+  | 'stats';
+
+export interface PopoverModule {
+  id: PopoverModuleId;
+  label: string;
+  description: string;
+  // `required: true` modules can never be hidden (e.g. the primary start
+  // button must always be reachable — otherwise the popover becomes useless).
+  required?: boolean;
+}
+
+export const POPOVER_MODULE_CATALOG: readonly PopoverModule[] = [
+  { id: 'status', label: 'Status bar', description: 'Header with idle/running dot + open-full-app link', required: true },
+  { id: 'interval', label: 'Interval', description: 'Milliseconds + live CPS readout' },
+  { id: 'mouse', label: 'Mouse', description: 'Button and click-kind segmented controls' },
+  { id: 'target', label: 'Target', description: 'Cursor / fixed / sequence + pick affordance' },
+  { id: 'stop', label: 'Stop condition', description: 'Manual / after-clicks / after-duration' },
+  { id: 'humanize', label: 'Humanize', description: 'Add jitter to timing and position' },
+  { id: 'theme', label: 'Theme', description: 'Quick cycle through theme presets' },
+  { id: 'accent', label: 'Accent', description: 'Accent-color swatch picker' },
+  { id: 'hotkey', label: 'Hotkey inline', description: 'Inline display of the clicker hotkey' },
+  { id: 'start', label: 'Start button', description: 'Primary start / stop control', required: true },
+  { id: 'stats', label: 'Stats footer', description: 'Clicks + elapsed + hotkey footer' },
+] as const;
+
+// Order matters — it's the render order in the popover.
+export const DEFAULT_POPOVER_MODULES: readonly PopoverModuleId[] = [
+  'status',
+  'interval',
+  'mouse',
+  'target',
+  'stop',
+  'humanize',
+  'start',
+  'stats',
+] as const;
 
 export const ACCENT_PRESETS = [
   { id: 'lime', label: 'Lime', value: '#d8ff00' },
@@ -130,6 +191,10 @@ export interface ClikState {
 
   // Menu-bar popover.
   popoverAutoHide: boolean;
+  // Ordered list of modules rendered inside the tray popover. Hidden modules
+  // simply aren't in the array. The user manages the list from the popover's
+  // own gear-icon settings panel.
+  popoverModules: PopoverModuleId[];
 
   // Feedback.
   soundOnEvents: boolean;
@@ -138,6 +203,10 @@ export interface ClikState {
 
   // Power.
   preventSleep: boolean;
+
+  // Clicker — "click when idle". If > 0, the engine postpones each click
+  // until the user has been idle (no mouse / keyboard) for this many ms.
+  idleThresholdMs: number;
 
   // Kill zones — a safety layer. When `killZonesEnabled` is true, the clicker
   // engine aborts a run if a click would land inside any enabled zone. Presets
@@ -153,6 +222,15 @@ export interface ClikState {
   sequenceStop: StopCondition;
   sequenceHumanize: boolean;
 
+  // Scheduling triggers — time / event based autonomy launches. The main
+  // process mirrors this list and fires flows directly via IPC.
+  triggers: Trigger[];
+
+  // Mouse path recordings. Each one is a list of timestamped cursor
+  // positions; the Autonomy workspace can attach them to path-playback
+  // nodes in a future release.
+  pathRecordings: PathRecording[];
+
   // Autonomy workspace — a collection of node-map flows and pointers to the
   // currently-selected one.
   autonomyFlows: AutonomyFlow[];
@@ -163,7 +241,7 @@ export interface ClikState {
   autonomyIterations: number;
   autonomyElapsedMs: number;
   autonomyLastError?: string;
-  autonomyLastFound: { x: number; y: number; score: number } | null;
+  autonomyLastFound: { x: number; y: number; confidence: number } | null;
 
   // Autonomy editor history — snapshots of the *active* flow. Not persisted.
   // Discrete actions push onto `past`; undo moves them to `future`. Rapid
@@ -223,10 +301,25 @@ export interface ClikState {
   setDockVisible: (v: boolean) => void;
   setCloseToTray: (v: boolean) => void;
   setPopoverAutoHide: (v: boolean) => void;
+  togglePopoverModule: (id: PopoverModuleId) => void;
+  movePopoverModule: (id: PopoverModuleId, dir: -1 | 1) => void;
+  resetPopoverModules: () => void;
   setSoundOnEvents: (v: boolean) => void;
   setNotifyOnComplete: (v: boolean) => void;
   setConfirmBeforeStop: (v: boolean) => void;
   setPreventSleep: (v: boolean) => void;
+  setIdleThresholdMs: (v: number) => void;
+
+  // Triggers.
+  addTrigger: (t: Omit<Trigger, 'id'>) => string;
+  updateTrigger: (id: string, patch: Partial<Trigger>) => void;
+  removeTrigger: (id: string) => void;
+  toggleTrigger: (id: string) => void;
+
+  // Path recordings.
+  addPathRecording: (rec: PathRecording) => void;
+  removePathRecording: (id: string) => void;
+  renamePathRecording: (id: string, name: string) => void;
 
   toggleKillZonesEnabled: () => void;
   addKillZoneRect: (rect: { x: number; y: number; w: number; h: number }, name?: string) => string;
@@ -348,12 +441,18 @@ const defaults = {
   closeToTray: true,
 
   popoverAutoHide: true,
+  popoverModules: [...DEFAULT_POPOVER_MODULES] as PopoverModuleId[],
 
   soundOnEvents: false,
   notifyOnComplete: false,
   confirmBeforeStop: false,
 
   preventSleep: false,
+
+  idleThresholdMs: 0,
+
+  triggers: [] as Trigger[],
+  pathRecordings: [] as PathRecording[],
 
   killZonesEnabled: false,
   killZones: [
@@ -431,7 +530,7 @@ function makeDefaultNode(kind: AutonomyNodeKind, at: { x: number; y: number }): 
         ...xy,
         template: null,
         searchRegion: null,
-        threshold: 0.2,
+        minConfidence: 0.85,
       };
     case 'branch':
       return { id, kind: 'branch', ...xy, condition: 'last-found' };
@@ -467,7 +566,7 @@ function makeDefaultNode(kind: AutonomyNodeKind, at: { x: number; y: number }): 
         ...xy,
         template: null,
         searchRegion: null,
-        threshold: 0.2,
+        minConfidence: 0.85,
         intervalMs: 250,
         timeoutMs: 5000,
       };
@@ -478,7 +577,7 @@ function makeDefaultNode(kind: AutonomyNodeKind, at: { x: number; y: number }): 
         ...xy,
         template: null,
         searchRegion: null,
-        threshold: 0.2,
+        minConfidence: 0.85,
         intervalMs: 250,
         timeoutMs: 5000,
       };
@@ -510,6 +609,32 @@ function makeDefaultNode(kind: AutonomyNodeKind, at: { x: number; y: number }): 
         region: null,
         toClipboard: true,
         saveToDisk: false,
+      };
+
+    case 'read-text':
+      return {
+        id,
+        kind: 'read-text',
+        ...xy,
+        region: null,
+        textVar: 'text',
+        accurate: false,
+        lang: 'en-US',
+      };
+    case 'focus-app':
+      return {
+        id,
+        kind: 'focus-app',
+        ...xy,
+        appName: 'com.apple.Safari',
+        launchIfMissing: false,
+      };
+    case 'call-flow':
+      return {
+        id,
+        kind: 'call-flow',
+        ...xy,
+        flowId: null,
       };
   }
 }
@@ -556,6 +681,69 @@ const preferenceKeys = [
   'confirmBeforeStop',
   'preventSleep',
 ] as const;
+
+const PERSIST_KEY = 'clik-config-v1';
+
+// Single source of truth for which keys are persisted and shared between
+// windows. Reused by the zustand persist middleware AND by the IPC broadcast
+// that keeps the main window + tray popover in lockstep in real time.
+function partializeState(s: ClikState) {
+  return {
+    cadence: s.cadence,
+    button: s.button,
+    kind: s.kind,
+    target: s.target,
+    stop: s.stop,
+    humanize: s.humanize,
+    hotkeys: s.hotkeys,
+
+    panels: s.panels,
+
+    sidebarCollapsed: s.sidebarCollapsed,
+    testerCollapsed: s.testerCollapsed,
+
+    accent: s.accent,
+    density: s.density,
+    reduceMotion: s.reduceMotion,
+    theme: s.theme,
+
+    launchAtLogin: s.launchAtLogin,
+    alwaysOnTop: s.alwaysOnTop,
+    dockVisible: s.dockVisible,
+    closeToTray: s.closeToTray,
+
+    popoverAutoHide: s.popoverAutoHide,
+    popoverModules: s.popoverModules,
+
+    soundOnEvents: s.soundOnEvents,
+    notifyOnComplete: s.notifyOnComplete,
+    confirmBeforeStop: s.confirmBeforeStop,
+
+    preventSleep: s.preventSleep,
+
+    idleThresholdMs: s.idleThresholdMs,
+
+    triggers: s.triggers,
+    pathRecordings: s.pathRecordings,
+
+    killZonesEnabled: s.killZonesEnabled,
+    killZones: s.killZones,
+
+    route: s.route,
+
+    sequencePoints: s.sequencePoints,
+    sequenceButton: s.sequenceButton,
+    sequenceStop: s.sequenceStop,
+    sequenceHumanize: s.sequenceHumanize,
+
+    autonomyFlows: s.autonomyFlows,
+    activeFlowId: s.activeFlowId,
+
+    runLog: s.runLog,
+  };
+}
+
+type PersistedSlice = ReturnType<typeof partializeState>;
 
 export const useStore = create<ClikState>()(
   persist(
@@ -618,10 +806,87 @@ export const useStore = create<ClikState>()(
       setDockVisible: (dockVisible) => set({ dockVisible }),
       setCloseToTray: (closeToTray) => set({ closeToTray }),
       setPopoverAutoHide: (popoverAutoHide) => set({ popoverAutoHide }),
+      togglePopoverModule: (id) =>
+        set((s) => {
+          // Required modules can't be toggled off — guarantees the popover
+          // always has at least the Status header and the Start button.
+          const meta = POPOVER_MODULE_CATALOG.find((m) => m.id === id);
+          if (meta?.required) return {};
+          const present = s.popoverModules.includes(id);
+          if (present) {
+            return { popoverModules: s.popoverModules.filter((m) => m !== id) };
+          }
+          // When re-adding a module, slot it back in its catalog position so
+          // re-enabling three toggles in a row doesn't produce a weird order.
+          const catalogIndex = POPOVER_MODULE_CATALOG.findIndex((m) => m.id === id);
+          const next = [...s.popoverModules];
+          // Find first current index whose catalog position is greater; insert there.
+          const insertAt = next.findIndex(
+            (m) => POPOVER_MODULE_CATALOG.findIndex((c) => c.id === m) > catalogIndex,
+          );
+          if (insertAt === -1) next.push(id);
+          else next.splice(insertAt, 0, id);
+          return { popoverModules: next };
+        }),
+      movePopoverModule: (id, dir) =>
+        set((s) => {
+          const idx = s.popoverModules.indexOf(id);
+          if (idx === -1) return {};
+          const next = idx + dir;
+          if (next < 0 || next >= s.popoverModules.length) return {};
+          const arr = s.popoverModules.slice();
+          const [m] = arr.splice(idx, 1);
+          arr.splice(next, 0, m);
+          return { popoverModules: arr };
+        }),
+      resetPopoverModules: () =>
+        set({ popoverModules: [...DEFAULT_POPOVER_MODULES] }),
       setSoundOnEvents: (soundOnEvents) => set({ soundOnEvents }),
       setNotifyOnComplete: (notifyOnComplete) => set({ notifyOnComplete }),
       setConfirmBeforeStop: (confirmBeforeStop) => set({ confirmBeforeStop }),
       setPreventSleep: (preventSleep) => set({ preventSleep }),
+      setIdleThresholdMs: (idleThresholdMs) =>
+        set({ idleThresholdMs: Math.max(0, Math.round(idleThresholdMs)) }),
+
+      addTrigger: (t) => {
+        const id = newId('trg');
+        const trigger = { ...t, id } as Trigger;
+        set((s) => ({ triggers: [...s.triggers, trigger] }));
+        // The main-process scheduler owns the actual timing, so every write
+        // needs to be mirrored over IPC. Fire-and-forget — the renderer's
+        // persisted list remains authoritative.
+        void window.clik?.triggersSet?.(get().triggers);
+        return id;
+      },
+      updateTrigger: (id, patch) => {
+        set((s) => ({
+          triggers: s.triggers.map((t) =>
+            t.id === id ? ({ ...t, ...patch } as Trigger) : t,
+          ),
+        }));
+        void window.clik?.triggersSet?.(get().triggers);
+      },
+      removeTrigger: (id) => {
+        set((s) => ({ triggers: s.triggers.filter((t) => t.id !== id) }));
+        void window.clik?.triggersRemove?.(id);
+      },
+      toggleTrigger: (id) => {
+        set((s) => ({
+          triggers: s.triggers.map((t) =>
+            t.id === id ? ({ ...t, enabled: !t.enabled } as Trigger) : t,
+          ),
+        }));
+        void window.clik?.triggersSet?.(get().triggers);
+      },
+
+      addPathRecording: (rec) =>
+        set((s) => ({ pathRecordings: [rec, ...s.pathRecordings] })),
+      removePathRecording: (id) =>
+        set((s) => ({ pathRecordings: s.pathRecordings.filter((r) => r.id !== id) })),
+      renamePathRecording: (id, name) =>
+        set((s) => ({
+          pathRecordings: s.pathRecordings.map((r) => (r.id === id ? { ...r, name } : r)),
+        })),
 
       toggleKillZonesEnabled: () =>
         set((s) => ({ killZonesEnabled: !s.killZonesEnabled })),
@@ -718,6 +983,8 @@ export const useStore = create<ClikState>()(
           stop: s.stop,
           humanize: s.humanize,
           killZones: { enabled: s.killZonesEnabled, zones: s.killZones },
+          idleThresholdMs: s.idleThresholdMs,
+          workspace: 'clicker',
         };
       },
       appendRunLog: (entry) =>
@@ -745,11 +1012,15 @@ export const useStore = create<ClikState>()(
               x: p.x,
               y: p.y,
               dwellMs: Math.max(1, p.dwellMs),
+              repeat: Math.max(1, Math.round(p.repeat ?? 1)),
+              ...(typeof p.displayIndex === 'number' ? { displayIndex: p.displayIndex } : {}),
             })),
           },
           stop: s.sequenceStop,
           humanize: s.sequenceHumanize,
           killZones: { enabled: s.killZonesEnabled, zones: s.killZones },
+          idleThresholdMs: s.idleThresholdMs,
+          workspace: 'sequence',
         };
       },
 
@@ -1076,54 +1347,9 @@ export const useStore = create<ClikState>()(
       },
     }),
     {
-      name: 'clik-config-v1',
-      partialize: (s) => ({
-        cadence: s.cadence,
-        button: s.button,
-        kind: s.kind,
-        target: s.target,
-        stop: s.stop,
-        humanize: s.humanize,
-        hotkeys: s.hotkeys,
-
-        panels: s.panels,
-
-        sidebarCollapsed: s.sidebarCollapsed,
-        testerCollapsed: s.testerCollapsed,
-
-        accent: s.accent,
-        density: s.density,
-        reduceMotion: s.reduceMotion,
-
-        launchAtLogin: s.launchAtLogin,
-        alwaysOnTop: s.alwaysOnTop,
-        dockVisible: s.dockVisible,
-        closeToTray: s.closeToTray,
-
-        popoverAutoHide: s.popoverAutoHide,
-
-        soundOnEvents: s.soundOnEvents,
-        notifyOnComplete: s.notifyOnComplete,
-        confirmBeforeStop: s.confirmBeforeStop,
-
-        preventSleep: s.preventSleep,
-
-        killZonesEnabled: s.killZonesEnabled,
-        killZones: s.killZones,
-
-        route: s.route,
-
-        sequencePoints: s.sequencePoints,
-        sequenceButton: s.sequenceButton,
-        sequenceStop: s.sequenceStop,
-        sequenceHumanize: s.sequenceHumanize,
-
-        autonomyFlows: s.autonomyFlows,
-        activeFlowId: s.activeFlowId,
-
-        runLog: s.runLog,
-      }),
-      version: 2,
+      name: PERSIST_KEY,
+      partialize: partializeState,
+      version: 3,
       migrate: (persisted, version) => {
         // v1 → v2: single startStopHotkey plus dedicated 'hotkeys' route becomes
         // a per-workspace hotkey map. We port the existing accelerator onto the
@@ -1143,8 +1369,102 @@ export const useStore = create<ClikState>()(
           delete p.startStopHotkey;
           if (p.route === 'hotkeys') p.route = 'clicker';
         }
+        if (version < 3) {
+          // v2 → v3: find/wait-until-* nodes moved off SAD `threshold` (0 =
+          // perfect, 1 = anything goes) onto ZNCC `minConfidence` (1 = perfect,
+          // 0 = anything). Flip any old values so existing flows keep matching
+          // at roughly the same strictness, and rename the set-var source that
+          // exposed the legacy score.
+          const flows = p.autonomyFlows;
+          if (flows && typeof flows === 'object') {
+            for (const flow of Object.values(flows as Record<string, unknown>)) {
+              if (!flow || typeof flow !== 'object') continue;
+              const nodes = (flow as { nodes?: unknown }).nodes;
+              if (!Array.isArray(nodes)) continue;
+              for (const node of nodes) {
+                if (!node || typeof node !== 'object') continue;
+                const n = node as Record<string, unknown>;
+                if (
+                  n.kind === 'find' ||
+                  n.kind === 'wait-until-found' ||
+                  n.kind === 'wait-until-gone'
+                ) {
+                  if (typeof n.minConfidence !== 'number') {
+                    const t = typeof n.threshold === 'number' ? n.threshold : 0.15;
+                    n.minConfidence = Math.max(0, Math.min(1, 1 - t));
+                  }
+                  delete n.threshold;
+                }
+                if (n.kind === 'set-var') {
+                  const src = n.source;
+                  if (src && typeof src === 'object') {
+                    const srcRec = src as Record<string, unknown>;
+                    if (srcRec.kind === 'last-found-score') {
+                      srcRec.kind = 'last-found-confidence';
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
         return p;
       },
     },
   ),
 );
+
+// Cross-window state sync. The main window and the menu-bar popover are
+// separate Electron BrowserWindows, each with its own renderer process and
+// its own in-memory zustand store, so edits in one side never naturally reach
+// the other. We route every persisted-slice change through the main process:
+// each renderer subscribes to its own store, publishes the new slice on
+// change, and applies any slice it receives from a sibling window.
+//
+// `suppressBroadcast` is a reentrancy guard. When we apply a remote slice via
+// `setState`, that triggers our own subscribe callback — without the guard,
+// we'd echo the slice right back through main and every renderer would ping
+// pong every change forever.
+//
+// A shallow-equals check on the persisted slice prevents needless IPC churn
+// from runtime-only state updates (ticks, status changes, autonomy runtime),
+// since those fields aren't in `partializeState`.
+if (typeof window !== 'undefined' && typeof window.clik?.broadcastState === 'function') {
+  let suppressBroadcast = false;
+  let lastSlice: PersistedSlice = partializeState(useStore.getState());
+
+  useStore.subscribe((state) => {
+    if (suppressBroadcast) return;
+    const slice = partializeState(state);
+    if (shallowEqualSlice(slice, lastSlice)) return;
+    lastSlice = slice;
+    try {
+      window.clik.broadcastState(slice);
+    } catch {
+      /* ignore — main process may not be ready during early boot */
+    }
+  });
+
+  window.clik.onStateBroadcast((raw) => {
+    if (!raw || typeof raw !== 'object') return;
+    suppressBroadcast = true;
+    try {
+      // Cast is safe: the sender already ran the same partialize. We only
+      // ever spread known persisted keys, so runtime fields are preserved.
+      useStore.setState(raw as Partial<ClikState>);
+      lastSlice = partializeState(useStore.getState());
+    } finally {
+      suppressBroadcast = false;
+    }
+  });
+}
+
+function shallowEqualSlice(a: PersistedSlice, b: PersistedSlice): boolean {
+  const ak = Object.keys(a) as Array<keyof PersistedSlice>;
+  const bk = Object.keys(b) as Array<keyof PersistedSlice>;
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
