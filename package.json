@@ -1,0 +1,43 @@
+{
+  "name": "clik",
+  "version": "1.0.4",
+  "private": true,
+  "description": "CLIK — a brutalist macOS autoclicker",
+  "main": "out/main/index.js",
+  "author": "CLIK Labs",
+  "license": "MIT",
+  "scripts": {
+    "dev": "npm run build:helper && npm run build:icons && electron-vite dev",
+    "build": "npm run build:helper && npm run build:icons && electron-vite build",
+    "build:helper": "bash native/build.sh",
+    "build:icons": "node native/build-tray-icon.mjs",
+    "start": "electron-vite preview",
+    "package": "npm run build && electron-forge package",
+    "make": "npm run build && electron-forge make",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "lint": "echo 'lint stub'"
+  },
+  "dependencies": {
+    "electron-store": "^10.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.5.0",
+    "@electron-forge/maker-dmg": "^7.5.0",
+    "@electron-forge/maker-zip": "^7.5.0",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "electron": "^33.2.0",
+    "electron-vite": "^5.0.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  }
+}
