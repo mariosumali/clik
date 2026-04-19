@@ -24,7 +24,7 @@ const config: ForgeConfig = {
     executableName: 'Clik',
     appBundleId: 'com.cliklabs.clik',
     appCategoryType: 'public.app-category.utilities',
-    icon: undefined,
+    icon: 'resources/Clik',
     ignore: PACKAGER_IGNORE,
     extraResource: [
       'resources/clik-helper',

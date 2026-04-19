@@ -5,6 +5,8 @@ dist
 .DS_Store
 *.log
 resources/clik-helper
+resources/Clik.icns
+resources/Clik.iconset
 !resources/.gitkeep
 .vite
 .electron-vite
