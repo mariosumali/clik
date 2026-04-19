@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mars-autoclicker (Electron)</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <header class="sidebar-header">
+          <p class="eyebrow">Mars AutoClicker</p>
+          <h1>Control Deck</h1>
+        </header>
+
+        <section class="sidebar-section">
+          <div class="section-title-row">
+            <h2>Profiles</h2>
+            <button id="newProfileBtn" class="ghost-btn">New</button>
+          </div>
+          <div id="profileList" class="profile-list"></div>
+          <div class="profile-actions">
+            <button id="duplicateProfileBtn" class="ghost-btn">Duplicate</button>
+            <button id="deleteProfileBtn" class="ghost-btn danger">Delete</button>
+          </div>
+        </section>
+
+        <section class="sidebar-section">
+          <h2>Panels</h2>
+          <nav id="tabNav" class="tab-nav"></nav>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">Runtime</p>
+            <h2 id="activeProfileTitle">Quick Start</h2>
+            <p id="runtimeStatusText" class="muted">Engine is idle</p>
+          </div>
+          <div class="runtime-actions">
+            <button id="startBtn" class="primary-btn">Start (F8)</button>
+            <button id="pauseBtn" class="ghost-btn">Pause / Resume (F9)</button>
+            <button id="stopBtn" class="ghost-btn danger">Stop (F12)</button>
+          </div>
+        </header>
+
+        <section class="runtime-metrics" id="runtimeMetrics"></section>
+
+        <section id="panelRoot" class="panel-root"></section>
+      </main>
+
+      <aside class="inspector">
+        <section class="inspector-card">
+          <h3>Live Preview</h3>
+          <div class="preview-tile">
+            <p>Screen preview placeholder</p>
+            <small>Use this space for future visual targeting overlays.</small>
+          </div>
+        </section>
+
+        <section class="inspector-card">
+          <h3>Permissions</h3>
+          <div id="permissionList" class="permission-list"></div>
+        </section>
+
+        <section class="inspector-card">
+          <h3>Hotkeys</h3>
+          <ul class="hotkeys">
+            <li><span>Start</span><kbd>F8</kbd></li>
+            <li><span>Pause / Resume</span><kbd>F9</kbd></li>
+            <li><span>Emergency Stop</span><kbd>F12</kbd></li>
+          </ul>
+        </section>
+
+        <section class="inspector-card">
+          <h3>Activity</h3>
+          <p id="noticeText" class="muted">No notices yet.</p>
+        </section>
+      </aside>
+    </div>
+
+    <template id="metricCardTemplate">
+      <article class="metric-card">
+        <p class="metric-label"></p>
+        <p class="metric-value"></p>
+      </article>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
