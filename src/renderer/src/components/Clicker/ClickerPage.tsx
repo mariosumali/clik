@@ -6,6 +6,7 @@ import { StopCard } from './StopCard';
 import { StartButton } from './StartButton';
 import { RunStats } from './RunStats';
 import { ClickTester } from '../Tester/ClickTester';
+import { useStore } from '../../store';
 
 interface ClickerPageProps {
   onFire: () => void;
@@ -13,8 +14,13 @@ interface ClickerPageProps {
 }
 
 export function ClickerPage({ onFire, onCancel }: ClickerPageProps) {
+  const testerCollapsed = useStore((s) => s.testerCollapsed);
+
   return (
-    <div className="grid h-full" style={{ gridTemplateColumns: '1fr 420px' }}>
+    <div
+      className="grid h-full"
+      style={{ gridTemplateColumns: testerCollapsed ? '1fr 44px' : '1fr 420px' }}
+    >
       <div className="overflow-y-auto px-10 pt-10 pb-6">
         <Header />
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Segment } from '../primitives/Segment';
 import { Stepper } from '../primitives/Stepper';
+import { CollapsibleCard } from '../primitives/CollapsibleCard';
 import { useStore } from '../../store';
 
 type TargetKind = 'cursor' | 'fixed' | 'sequence';
@@ -8,6 +9,8 @@ type TargetKind = 'cursor' | 'fixed' | 'sequence';
 export function TargetCard() {
   const target = useStore((s) => s.target);
   const setTarget = useStore((s) => s.setTarget);
+  const open = useStore((s) => s.panels.target);
+  const togglePanel = useStore((s) => s.togglePanel);
   const [picking, setPicking] = useState(false);
 
   const kind: TargetKind = target.kind;
@@ -23,15 +26,22 @@ export function TargetCard() {
     }
   }
 
-  return (
-    <section className="card p-5">
-      <div className="flex items-center justify-between mb-5">
-        <div className="label">
-          <span className="text-[var(--color-muted)] mr-2">03</span>· Target
-        </div>
-        <div className="label-muted">Where to click</div>
-      </div>
+  const summary =
+    target.kind === 'fixed'
+      ? `Fixed · ${target.x}, ${target.y}`
+      : target.kind === 'cursor'
+        ? 'Follows cursor'
+        : 'Sequence';
 
+  return (
+    <CollapsibleCard
+      step="03"
+      title="Target"
+      subtitle="Where to click"
+      summary={summary}
+      open={open}
+      onToggle={() => togglePanel('target')}
+    >
       <div className="flex flex-col gap-4">
         <Segment<TargetKind>
           value={kind}
@@ -92,6 +102,6 @@ export function TargetCard() {
           </>
         )}
       </div>
-    </section>
+    </CollapsibleCard>
   );
 }

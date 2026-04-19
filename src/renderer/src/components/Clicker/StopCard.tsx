@@ -1,5 +1,6 @@
 import { Segment } from '../primitives/Segment';
 import { Stepper } from '../primitives/Stepper';
+import { CollapsibleCard } from '../primitives/CollapsibleCard';
 import { useStore } from '../../store';
 import type { StopCondition } from '../../../../shared/types';
 
@@ -8,16 +9,25 @@ type StopKind = StopCondition['kind'];
 export function StopCard() {
   const stop = useStore((s) => s.stop);
   const setStop = useStore((s) => s.setStop);
+  const open = useStore((s) => s.panels.stop);
+  const togglePanel = useStore((s) => s.togglePanel);
+
+  const summary =
+    stop.kind === 'off'
+      ? 'Manual · ESC to stop'
+      : stop.kind === 'after-clicks'
+        ? `After ${stop.count.toLocaleString('en-US')} clicks`
+        : `After ${Math.round(stop.ms / 1000)}s`;
 
   return (
-    <section className="card p-5">
-      <div className="flex items-center justify-between mb-5">
-        <div className="label">
-          <span className="text-[var(--color-muted)] mr-2">04</span>· Stop condition
-        </div>
-        <div className="label-muted">When to halt</div>
-      </div>
-
+    <CollapsibleCard
+      step="04"
+      title="Stop condition"
+      subtitle="When to halt"
+      summary={summary}
+      open={open}
+      onToggle={() => togglePanel('stop')}
+    >
       <div className="flex flex-col gap-4">
         <Segment<StopKind>
           value={stop.kind}
@@ -65,6 +75,6 @@ export function StopCard() {
           </label>
         )}
       </div>
-    </section>
+    </CollapsibleCard>
   );
 }
