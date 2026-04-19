@@ -1,0 +1,18 @@
+export const IPC = {
+  clickerStart: 'clicker:start',
+  clickerStop: 'clicker:stop',
+  clickerTick: 'clicker:tick',
+  permCheck: 'perm:check',
+  hotkeySet: 'hotkey:set',
+  hotkeyStatus: 'hotkey:status',
+  appShowMain: 'app:show-main',
+  appHideMain: 'app:hide-main',
+  appHidePopover: 'app:hide-popover',
+  appMode: 'app:mode',
+  pickerStart: 'picker:start',
+  pickerPick: 'picker:pick',
+  pickerCancel: 'picker:cancel',
+  settingsLaunchAtLoginGet: 'settings:launch-at-login:get',
+  settingsLaunchAtLoginSet: 'settings:launch-at-login:set',
+  settingsAlwaysOnTopSet: 'settings:always-on-top:set',
+} as const;
