@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useStore } from '../../store';
 
 const WINDOW_MS = 1000;
 const HALFTONE_COLS = 36;
@@ -24,6 +25,14 @@ function seededPattern(): boolean[] {
 }
 
 export function ClickTester() {
+  const collapsed = useStore((s) => s.testerCollapsed);
+  const toggle = useStore((s) => s.toggleTester);
+
+  if (collapsed) return <CollapsedTesterRail onExpand={toggle} />;
+  return <ExpandedTester onCollapse={toggle} />;
+}
+
+function ExpandedTester({ onCollapse }: { onCollapse: () => void }) {
   const clicksRef = useRef<number[]>([]); // timestamps, trimmed to WINDOW_MS
   const [stats, setStats] = useState<Stats>({
     liveCps: 0,
@@ -101,9 +110,20 @@ export function ClickTester() {
         ))}
       </div>
 
-      <header className="relative px-6 pt-6 pb-4 flex items-center justify-between">
+      <header className="relative px-6 pt-6 pb-4 flex items-center justify-between gap-3">
         <div className="label">Click tester</div>
-        <div className="label-muted">Measures your CPS</div>
+        <div className="flex items-center gap-3">
+          <div className="label-muted">Measures your CPS</div>
+          <button
+            type="button"
+            className="icon-btn no-drag"
+            onClick={onCollapse}
+            aria-label="Collapse click tester"
+            title="Collapse click tester"
+          >
+            <TesterChevron direction="right" />
+          </button>
+        </div>
       </header>
 
       <StatsRow stats={stats} avgCps={avgCps} />
@@ -183,6 +203,55 @@ function BigStat({
       </div>
       {sub && <div className="label-muted mt-2">{sub}</div>}
     </div>
+  );
+}
+
+function CollapsedTesterRail({ onExpand }: { onExpand: () => void }) {
+  return (
+    <div
+      className="relative h-full w-[44px] flex flex-col items-center bg-[var(--color-ink)]"
+    >
+      <button
+        type="button"
+        className="icon-btn no-drag mt-4"
+        onClick={onExpand}
+        aria-label="Expand click tester"
+        title="Expand click tester"
+      >
+        <TesterChevron direction="left" />
+      </button>
+
+      <button
+        type="button"
+        onClick={onExpand}
+        className="no-drag flex-1 w-full flex items-center justify-center"
+        aria-label="Expand click tester"
+        title="Expand click tester"
+      >
+        <span
+          className="label-muted select-none"
+          style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+        >
+          Click Tester
+        </span>
+      </button>
+    </div>
+  );
+}
+
+function TesterChevron({ direction }: { direction: 'left' | 'right' }) {
+  const d = direction === 'left' ? 'M9 3 L5 8 L9 13' : 'M5 3 L9 8 L5 13';
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+      <path
+        d={d}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
   );
 }
 
