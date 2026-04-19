@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+DerivedData/
+.DS_Store
+electron/node_modules/
+electron/dist/
+electron/.cache/
