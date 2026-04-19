@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ACCENT_PRESETS, type Density, type ThemeMode, useStore } from '../../store';
+import { ACCENT_PRESETS, THEME_PRESETS, type Density, type ThemeMode, useStore } from '../../store';
 import { Stepper } from '../primitives/Stepper';
 import type { KillZone } from '../../../../shared/types';
 
@@ -135,16 +135,38 @@ export function SettingsModal() {
 
         <div className="flex-1 min-h-0 overflow-y-auto py-2">
           <SectionHeading>Appearance</SectionHeading>
-          <Row title="Theme" hint="Match the system appearance or lock to light or dark.">
-            <Segment<ThemeMode>
-              value={theme}
-              onChange={setTheme}
-              options={[
-                { value: 'system', label: 'System' },
-                { value: 'light', label: 'Light' },
-                { value: 'dark', label: 'Dark' },
-              ]}
-            />
+          <Row title="Theme" hint="Match the system or pick a full palette.">
+            <div className="flex flex-col items-end gap-2">
+              <Segment<ThemeMode>
+                value={
+                  theme === 'system' || theme === 'light' || theme === 'dark'
+                    ? theme
+                    : 'dark'
+                }
+                onChange={setTheme}
+                options={[
+                  { value: 'system', label: 'System' },
+                  { value: 'light', label: 'Light' },
+                  { value: 'dark', label: 'Dark' },
+                ]}
+              />
+              <div className="flex items-center gap-2">
+                {THEME_PRESETS.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="swatch"
+                    data-active={theme === t.id}
+                    style={{
+                      background: `linear-gradient(135deg, ${t.bg} 50%, ${t.fg} 50%)`,
+                    }}
+                    onClick={() => setTheme(t.id)}
+                    aria-label={`Theme ${t.label}`}
+                    title={t.label}
+                  />
+                ))}
+              </div>
+            </div>
           </Row>
           <Row title="Accent color" hint="Tints indicators, running state, and action highlights.">
             <div className="flex items-center gap-2">

@@ -335,6 +335,78 @@ body[data-theme='light'] {
   --color-muted: #6f6f66;
 }
 
+/* Phosphor — classic CRT green-on-black terminal. */
+body[data-theme='phosphor'] {
+  --color-ink: #05100a;
+  --color-ink-2: #0a1b12;
+  --color-ink-3: #0f2318;
+  --color-line: #1a3b28;
+  --color-line-2: #2a5a3d;
+  --color-cream: #7dff9f;
+  --color-cream-dim: #4fbf74;
+  --color-muted: #3a8a55;
+}
+
+/* Amber — vintage amber-on-black terminal. */
+body[data-theme='amber'] {
+  --color-ink: #120a00;
+  --color-ink-2: #1d1205;
+  --color-ink-3: #261908;
+  --color-line: #3a2a10;
+  --color-line-2: #5a4220;
+  --color-cream: #ffb74a;
+  --color-cream-dim: #c88a2c;
+  --color-muted: #8a5f1c;
+}
+
+/* Paper — warm sepia light mode. */
+body[data-theme='paper'] {
+  --color-ink: #f4ecd4;
+  --color-ink-2: #ebe1c3;
+  --color-ink-3: #e0d4b0;
+  --color-line: #c8bc9a;
+  --color-line-2: #a89c78;
+  --color-cream: #2a2014;
+  --color-cream-dim: #5c4a2a;
+  --color-muted: #8a7550;
+}
+
+/* Solarized Dark — blue-gray base, muted accents. */
+body[data-theme='solar-dark'] {
+  --color-ink: #002b36;
+  --color-ink-2: #073642;
+  --color-ink-3: #0d4454;
+  --color-line: #1d4a56;
+  --color-line-2: #2d5b68;
+  --color-cream: #93a1a1;
+  --color-cream-dim: #839496;
+  --color-muted: #586e75;
+}
+
+/* Dracula — purple/pink dark theme. */
+body[data-theme='dracula'] {
+  --color-ink: #282a36;
+  --color-ink-2: #34364a;
+  --color-ink-3: #3d4059;
+  --color-line: #44475a;
+  --color-line-2: #6272a4;
+  --color-cream: #f8f8f2;
+  --color-cream-dim: #bfbfc7;
+  --color-muted: #6272a4;
+}
+
+/* High Contrast — pure black/white, maximum legibility. */
+body[data-theme='hi-contrast'] {
+  --color-ink: #000000;
+  --color-ink-2: #0a0a0a;
+  --color-ink-3: #141414;
+  --color-line: #ffffff;
+  --color-line-2: #cccccc;
+  --color-cream: #ffffff;
+  --color-cream-dim: #e5e5e5;
+  --color-muted: #b8b8b8;
+}
+
 /* Appearance data attributes on <body>. */
 body[data-density='compact'] .card {
   padding: 14px !important;
@@ -347,4 +419,58 @@ body[data-reduce-motion='true'] *::before,
 body[data-reduce-motion='true'] *::after {
   transition: none !important;
   animation: none !important;
+}
+
+/* Custom scrollbars — brutalist, square, hairline-bordered. Matches the
+   --color-* token system so light mode inherits automatically. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-cream-dim) var(--color-ink-2);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: var(--color-ink-2);
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--color-ink-2);
+  border-left: 1px solid var(--color-line);
+  border-top: 1px solid var(--color-line);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-cream-dim);
+  border: 2px solid var(--color-ink-2);
+  border-radius: 0;
+  min-height: 24px;
+  min-width: 24px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-cream);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--color-accent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--color-ink-2);
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Opt-out: elements that should have no visible scrollbar (overlays, drag
+   surfaces). Add class="no-scrollbar" to hide the track/thumb entirely. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }

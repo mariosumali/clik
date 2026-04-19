@@ -33,6 +33,14 @@ export function PopoverApp() {
   const hotkeys = useStore((s) => s.hotkeys);
   const setHotkey = useStore((s) => s.setHotkey);
   const lastRun = useStore((s) => s.runLog[0]);
+  // Appearance preferences — mirrored from the full-window App so the popover
+  // picks up the exact same theme, accent, density, and reduced-motion state
+  // the user has configured in Settings. Without these, the popover would
+  // always render with the built-in dark defaults regardless of user choice.
+  const accent = useStore((s) => s.accent);
+  const density = useStore((s) => s.density);
+  const reduceMotion = useStore((s) => s.reduceMotion);
+  const theme = useStore((s) => s.theme);
 
   const [picking, setPicking] = useState(false);
 
@@ -81,6 +89,35 @@ export function PopoverApp() {
       },
     );
   }, [hotkeys]);
+
+  // Mirror App.tsx's appearance wiring so opening the popover yields the same
+  // palette, accent, density, and motion behavior as the main window — the two
+  // windows each have their own DOM, so each has to apply the CSS variables
+  // and data-attributes independently.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--color-accent', accent);
+  }, [accent]);
+
+  useEffect(() => {
+    document.body.dataset.density = density;
+  }, [density]);
+
+  useEffect(() => {
+    document.body.dataset.reduceMotion = reduceMotion ? 'true' : 'false';
+  }, [reduceMotion]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: light)');
+    const apply = () => {
+      const resolved =
+        theme === 'system' ? (media.matches ? 'light' : 'dark') : theme;
+      document.body.dataset.theme = resolved;
+    };
+    apply();
+    if (theme !== 'system') return;
+    media.addEventListener('change', apply);
+    return () => media.removeEventListener('change', apply);
+  }, [theme]);
 
   useEffect(() => {
     if (status !== 'running') return;

@@ -27,7 +27,16 @@ export type WorkspaceRoute =
   | 'autonomy'
   | 'run-log';
 export type Density = 'comfy' | 'compact';
-export type ThemeMode = 'system' | 'light' | 'dark';
+export type ThemeMode =
+  | 'system'
+  | 'dark'
+  | 'light'
+  | 'phosphor'
+  | 'amber'
+  | 'paper'
+  | 'solar-dark'
+  | 'dracula'
+  | 'hi-contrast';
 
 export interface SequencePoint {
   id: string;
@@ -77,6 +86,15 @@ export const ACCENT_PRESETS = [
   { id: 'amber', label: 'Amber', value: '#ffb23f' },
   { id: 'cream', label: 'Cream', value: '#efeadd' },
 ] as const;
+
+export const THEME_PRESETS = [
+  { id: 'phosphor', label: 'Phosphor', bg: '#05100a', fg: '#7dff9f' },
+  { id: 'amber', label: 'Amber', bg: '#120a00', fg: '#ffb74a' },
+  { id: 'paper', label: 'Paper', bg: '#f4ecd4', fg: '#2a2014' },
+  { id: 'solar-dark', label: 'Solar Dark', bg: '#002b36', fg: '#93a1a1' },
+  { id: 'dracula', label: 'Dracula', bg: '#282a36', fg: '#f8f8f2' },
+  { id: 'hi-contrast', label: 'Hi Contrast', bg: '#000000', fg: '#ffffff' },
+] as const satisfies ReadonlyArray<{ id: ThemeMode; label: string; bg: string; fg: string }>;
 
 export interface ClikState {
   route: WorkspaceRoute;
@@ -580,7 +598,16 @@ export const useStore = create<ClikState>()(
         set({ panels: { interval: open, button: open, target: open, stop: open } }),
 
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
-      toggleTester: () => set((s) => ({ testerCollapsed: !s.testerCollapsed })),
+      toggleTester: () =>
+        set((s) => {
+          const nextCollapsed = !s.testerCollapsed;
+          // Tester column is 44px collapsed / 420px expanded. Grow/shrink the
+          // window by the delta so the left content keeps its size and the
+          // tester "extends to the right" on expand.
+          const delta = nextCollapsed ? -(420 - 44) : 420 - 44;
+          void window.clik?.resizeMainByDelta?.(delta);
+          return { testerCollapsed: nextCollapsed };
+        }),
 
       setAccent: (accent) => set({ accent }),
       setDensity: (density) => set({ density }),
@@ -690,6 +717,7 @@ export const useStore = create<ClikState>()(
           target: s.target,
           stop: s.stop,
           humanize: s.humanize,
+          killZones: { enabled: s.killZonesEnabled, zones: s.killZones },
         };
       },
       appendRunLog: (entry) =>
@@ -721,6 +749,7 @@ export const useStore = create<ClikState>()(
           },
           stop: s.sequenceStop,
           humanize: s.sequenceHumanize,
+          killZones: { enabled: s.killZonesEnabled, zones: s.killZones },
         };
       },
 

@@ -288,12 +288,12 @@ export function App() {
     document.body.dataset.reduceMotion = reduceMotion ? 'true' : 'false';
   }, [reduceMotion]);
 
-  // Resolve the theme preference to a concrete 'dark' | 'light' value. When the
-  // user picks "system", we track the OS-level preference and update live.
+  // Resolve the theme preference to a concrete data-theme value. Only 'system'
+  // dereferences to the OS preference; named themes flow through unchanged.
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: light)');
     const apply = () => {
-      const resolved: 'dark' | 'light' =
+      const resolved =
         theme === 'system' ? (media.matches ? 'light' : 'dark') : theme;
       document.body.dataset.theme = resolved;
     };

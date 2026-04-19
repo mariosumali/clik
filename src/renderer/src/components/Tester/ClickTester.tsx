@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
 import { useStore } from '../../store';
 
 const WINDOW_MS = 1000;
-const HALFTONE_COLS = 36;
-const HALFTONE_ROWS = 26;
 
 interface Stats {
   liveCps: number;
@@ -11,17 +9,6 @@ interface Stats {
   total: number;
   lastClickAt: number | null;
   sessionStartedAt: number | null;
-}
-
-function seededPattern(): boolean[] {
-  // Deterministic dim halftone used as backdrop. Stays out of the way of the target card.
-  const arr: boolean[] = [];
-  let seed = 0x9e3779b9;
-  for (let i = 0; i < HALFTONE_COLS * HALFTONE_ROWS; i++) {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    arr.push((seed & 0xff) < 22);
-  }
-  return arr;
 }
 
 export function ClickTester() {
@@ -42,7 +29,6 @@ function ExpandedTester({ onCollapse }: { onCollapse: () => void }) {
     sessionStartedAt: null,
   });
   const [flashAt, setFlashAt] = useState(0);
-  const pattern = useMemo(() => seededPattern(), []);
 
   const recalc = useCallback(() => {
     const now = performance.now();
@@ -94,22 +80,6 @@ function ExpandedTester({ onCollapse }: { onCollapse: () => void }) {
 
   return (
     <div className="relative h-full w-full overflow-hidden flex flex-col">
-      {/* Dim halftone backdrop. */}
-      <div
-        aria-hidden
-        className="absolute inset-0 grid pointer-events-none"
-        style={{
-          gridTemplateColumns: `repeat(${HALFTONE_COLS}, 1fr)`,
-          gridTemplateRows: `repeat(${HALFTONE_ROWS}, 1fr)`,
-          gap: '4px',
-          padding: '8px',
-        }}
-      >
-        {pattern.map((on, i) => (
-          <div key={i} className={`dot ${on ? '' : 'off'}`} style={{ opacity: on ? 0.22 : 0.06 }} />
-        ))}
-      </div>
-
       <header className="relative px-6 pt-6 pb-4 flex items-center justify-between gap-3">
         <div className="label">Click tester</div>
         <div className="flex items-center gap-3">
@@ -145,9 +115,6 @@ function ExpandedTester({ onCollapse }: { onCollapse: () => void }) {
           <Crosshair fill={flashActive ? 'var(--color-ink)' : 'var(--color-cream)'} />
           <span className="label mt-5" style={{ color: 'inherit' }}>
             Click to test
-          </span>
-          <span className="label-muted mt-1" style={{ color: flashActive ? 'var(--color-ink)' : 'var(--color-muted)' }}>
-            Autoclicker counts too
           </span>
         </button>
       </div>
